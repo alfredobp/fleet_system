@@ -28,18 +28,21 @@ export function RoutePlaybackBar({
   onClose
 }: RoutePlaybackBarProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(true);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(2); // 1x, 2x, 5x, 10x
 
   const points = history.points;
   const currentPoint = points[currentIndex] || points[0];
 
-  // Disparar cambio de punto inicial
+  const onPointChangeRef = useRef(onPointChange);
+  onPointChangeRef.current = onPointChange;
+
+  // Disparar cambio de punto al mapa
   useEffect(() => {
     if (currentPoint) {
-      onPointChange(currentPoint, currentIndex);
+      onPointChangeRef.current(currentPoint, currentIndex);
     }
-  }, [currentIndex, currentPoint, onPointChange]);
+  }, [currentIndex, currentPoint]);
 
   // Bucle de temporizador de reproducción
   useEffect(() => {

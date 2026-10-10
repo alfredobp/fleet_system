@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import Map from 'ol/Map.js';
 import View from 'ol/View.js';
 import TileLayer from 'ol/layer/Tile.js';
@@ -28,7 +28,6 @@ interface FleetMapProps {
 
 // Genera un icono SVG rotativo para el vehículo con su color y flecha de dirección
 function createVehicleSvgIcon(color: string, type: string): string {
-  // SVG con punta de dirección aerodinámica y punto de anclaje centrado
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 44 44">
     <defs>
       <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
@@ -42,6 +41,16 @@ function createVehicleSvgIcon(color: string, type: string): string {
     <circle cx="22" cy="22" r="3" fill="#ffffff"/>
   </svg>`;
   return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+
+// Caché global de iconos para evitar re-decodificar SVG en cada frame
+const svgCache: Record<string, string> = {};
+function getSvgDataUrl(color: string, type: string): string {
+  const key = `${color}_${type}`;
+  if (!svgCache[key]) {
+    svgCache[key] = createVehicleSvgIcon(color, type);
+  }
+  return svgCache[key];
 }
 
 export function FleetMap({
@@ -60,7 +69,10 @@ export function FleetMap({
   const playbackSourceRef = useRef<VectorSource>(new VectorSource());
   const playbackMarkerFeatureRef = useRef<Feature<Point> | null>(null);
 
-  // Almacena las posiciones animadas actuales (en EPSG:3857) para LERP
+  const vehicleLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
+  const trailLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
+
+  // Almacena las posiciones animadas actuales (en EPSG:3857) para LERP suave
   const animatedPositionsRef = useRef<Record<string, { current: [number, number]; target: [number, number]; heading: number }>>({});
   const featuresMapRef = useRef<Record<string, Feature<Point>>>({});
   const animationFrameIdRef = useRef<number | null>(null);
@@ -79,7 +91,7 @@ export function FleetMap({
   const selectedVehicleIdRef = useRef(selectedVehicleId);
   selectedVehicleIdRef.current = selectedVehicleId;
 
-  // Inicialización ÚNICA del mapa OpenLayers (sin recreaciones destructivas)
+  // Inicialización ÚNICA del mapa OpenLayers
   useEffect(() => {
     if (!mapElementRef.current) return;
 
@@ -120,12 +132,14 @@ export function FleetMap({
         })
       })
     });
+    trailLayerRef.current = trailLayer;
 
-    // Capa vectorial de vehículos
+    // Capa vectorial de vehículos en tiempo real
     const vehicleLayer = new VectorLayer({
       source: vectorSourceRef.current,
       zIndex: 10
     });
+    vehicleLayerRef.current = vehicleLayer;
 
     // Capa vectorial para reproducción de histórico (Time-Machine)
     const playbackLayer = new VectorLayer({
@@ -147,7 +161,7 @@ export function FleetMap({
       })
     });
 
-    // Evento de clic en vehículo utilizando ref estable
+    // Evento de clic en vehículo
     map.on('click', (event) => {
       let clickedVehicleId: string | null = null;
       map.forEachFeatureAtPixel(event.pixel, (feature) => {
@@ -165,9 +179,20 @@ export function FleetMap({
     return () => {
       map.setTarget(undefined);
     };
-  }, []); // Dependencia vacía: se inicializa una sola vez
+  }, []);
 
-  // Función para construir/actualizar el estilo del vehículo (refleja paradas y rumbo)
+  // Ocultar flota en tiempo real cuando el modo histórico esté activo
+  useEffect(() => {
+    const isHistoryActive = !!tripHistory;
+    if (vehicleLayerRef.current) {
+      vehicleLayerRef.current.setVisible(!isHistoryActive);
+    }
+    if (trailLayerRef.current) {
+      trailLayerRef.current.setVisible(!isHistoryActive);
+    }
+  }, [tripHistory]);
+
+  // Actualizar estilo del vehículo en tiempo real reutilizando el Icon en caché
   const updateFeatureStyle = (feature: Feature<Point>, vehicle: Vehicle, isSelected: boolean, headingDeg: number) => {
     const headingRad = (headingDeg * Math.PI) / 180;
     const isStopped = !!vehicle.currentStop;
@@ -176,38 +201,47 @@ export function FleetMap({
       : `${vehicle.name.split(' ')[0]} • ${vehicle.lastTelemetry.speed} km/h`;
 
     const iconColor = isSelected ? '#38bdf8' : isStopped ? '#f59e0b' : vehicle.color;
-    const bgFillColor = isSelected
-      ? 'rgba(2, 132, 199, 0.95)'
-      : isStopped
-      ? 'rgba(180, 83, 9, 0.95)'
-      : 'rgba(15, 23, 42, 0.85)';
+    const existingStyle = feature.getStyle() as Style | undefined;
 
-    feature.setStyle(
-      new Style({
-        image: new Icon({
-          src: createVehicleSvgIcon(iconColor, vehicle.type),
-          rotation: headingRad,
-          rotateWithView: true,
-          scale: isSelected ? 1.15 : 0.95
-        }),
-        text: new Text({
-          text: labelText,
-          font: isSelected || isStopped ? 'bold 11px sans-serif' : '10px sans-serif',
-          offsetY: 26,
-          fill: new Fill({ color: isSelected || isStopped ? '#ffffff' : '#cbd5e1' }),
-          backgroundFill: new Fill({ color: bgFillColor }),
-          backgroundStroke: new Stroke({
-            color: isSelected ? '#38bdf8' : isStopped ? '#fbbf24' : 'rgba(255, 255, 255, 0.15)',
-            width: 1
+    if (existingStyle && existingStyle.getImage()) {
+      // Reutilizar la instancia de imagen para evitar redecodificaciones y flash
+      existingStyle.getImage()?.setRotation(headingRad);
+      const text = existingStyle.getText();
+      if (text) {
+        text.setText(labelText);
+      }
+      feature.changed();
+    } else {
+      feature.setStyle(
+        new Style({
+          image: new Icon({
+            src: getSvgDataUrl(iconColor, vehicle.type),
+            rotation: headingRad,
+            rotateWithView: true,
+            scale: isSelected ? 1.15 : 0.95
           }),
-          padding: [2, 6, 2, 6]
+          text: new Text({
+            text: labelText,
+            font: isSelected || isStopped ? 'bold 11px sans-serif' : '10px sans-serif',
+            offsetY: 26,
+            fill: new Fill({ color: isSelected || isStopped ? '#ffffff' : '#cbd5e1' }),
+            backgroundFill: new Fill({
+              color: isSelected ? 'rgba(2, 132, 199, 0.95)' : isStopped ? 'rgba(180, 83, 9, 0.95)' : 'rgba(15, 23, 42, 0.85)'
+            }),
+            backgroundStroke: new Stroke({
+              color: isSelected ? '#38bdf8' : isStopped ? '#fbbf24' : 'rgba(255, 255, 255, 0.15)',
+              width: 1
+            }),
+            padding: [2, 6, 2, 6]
+          })
         })
-      })
-    );
+      );
+    }
   };
 
-  // Actualización de coordenadas objetivo y estilos cuando llega telemetría
+  // Actualización de coordenadas objetivo cuando llega telemetría
   useEffect(() => {
+    if (tripHistory) return; // Si estamos en histórico, no procesar cambios de mapa en vivo
     const vectorSource = vectorSourceRef.current;
 
     Object.values(vehicles).forEach((vehicle) => {
@@ -216,7 +250,6 @@ export function FleetMap({
       const isSelected = selectedVehicleId === vehicle.id;
 
       if (!existing) {
-        // Primera vez que se detecta el vehículo
         animatedPositionsRef.current[vehicle.id] = {
           current: [...targetCoords],
           target: [...targetCoords],
@@ -242,7 +275,6 @@ export function FleetMap({
       }
     });
 
-    // Limpieza de vehículos eliminados si los hubiera
     const currentIds = new Set(Object.keys(vehicles));
     Object.keys(featuresMapRef.current).forEach((id) => {
       if (!currentIds.has(id)) {
@@ -252,45 +284,42 @@ export function FleetMap({
         delete animatedPositionsRef.current[id];
       }
     });
-  }, [vehicles, selectedVehicleId]);
+  }, [vehicles, selectedVehicleId, tripHistory]);
 
-  // Bucle de animación cinemática fluida (LERP a 60 FPS sin recreación de objetos)
+  // Bucle de animación continua con LERP
   useEffect(() => {
+    const LERP_FACTOR = 0.08;
+
     const animate = () => {
-      const positions = animatedPositionsRef.current;
-      const features = featuresMapRef.current;
+      // Si el modo histórico está activo, pausar el ciclo LERP en segundo plano
+      if (!tripHistory) {
+        let followedCoords: [number, number] | null = null;
 
-      Object.keys(positions).forEach((id) => {
-        const pos = positions[id];
-        const feature = features[id];
-        if (!pos || !feature) return;
+        Object.keys(animatedPositionsRef.current).forEach((id) => {
+          const pos = animatedPositionsRef.current[id];
+          const feature = featuresMapRef.current[id];
+          if (!feature) return;
 
-        // Suavizado cinemático continuo
-        const lerpFactor = 0.15;
-        pos.current[0] += (pos.target[0] - pos.current[0]) * lerpFactor;
-        pos.current[1] += (pos.target[1] - pos.current[1]) * lerpFactor;
+          const dx = pos.target[0] - pos.current[0];
+          const dy = pos.target[1] - pos.current[1];
 
-        // Mover geometría sin recrear objetos
-        const geom = feature.getGeometry();
-        if (geom) {
-          geom.setCoordinates(pos.current);
-        }
+          if (Math.abs(dx) > 0.05 || Math.abs(dy) > 0.05) {
+            pos.current[0] += dx * LERP_FACTOR;
+            pos.current[1] += dy * LERP_FACTOR;
 
-        // Rotar el icono existente sin decodificar SVG repetidamente
-        const style = feature.getStyle() as Style;
-        if (style) {
-          const icon = style.getImage() as Icon;
-          if (icon) {
-            icon.setRotation((pos.heading * Math.PI) / 180);
+            const geom = feature.getGeometry();
+            if (geom) {
+              geom.setCoordinates(pos.current);
+            }
           }
-        }
-      });
 
-      // Seguimiento de cámara si está activo
-      if (followModeRef.current && selectedVehicleIdRef.current && mapRef.current) {
-        const selectedPos = positions[selectedVehicleIdRef.current];
-        if (selectedPos) {
-          mapRef.current.getView().setCenter(selectedPos.current);
+          if (followModeRef.current && selectedVehicleIdRef.current === id) {
+            followedCoords = pos.current;
+          }
+        });
+
+        if (followedCoords && mapRef.current) {
+          mapRef.current.getView().setCenter(followedCoords);
         }
       }
 
@@ -304,14 +333,14 @@ export function FleetMap({
         cancelAnimationFrame(animationFrameIdRef.current);
       }
     };
-  }, []);
+  }, [tripHistory]);
 
   // Actualizar la polilínea del rastro del vehículo seleccionado
   useEffect(() => {
     const trailSource = trailSourceRef.current;
     trailSource.clear();
 
-    if (!selectedVehicleId) return;
+    if (!selectedVehicleId || tripHistory) return;
 
     const trail = breadcrumbs[selectedVehicleId];
     if (trail && trail.length > 1) {
@@ -321,9 +350,9 @@ export function FleetMap({
       });
       trailSource.addFeature(lineFeature);
     }
-  }, [selectedVehicleId, breadcrumbs]);
+  }, [selectedVehicleId, breadcrumbs, tripHistory]);
 
-  // Efecto cuando se activa o cambia tripHistory (dibuja la polilínea completa, inicio, fin y paradas)
+  // Efecto cuando se activa tripHistory: dibuja polilínea, inicio, fin y paradas de forma atómica
   useEffect(() => {
     const source = playbackSourceRef.current;
     source.clear();
@@ -345,7 +374,6 @@ export function FleetMap({
         })
       })
     );
-    source.addFeature(routeLine);
 
     // 2. Línea interior luminosa (efecto neón)
     const routeLineInner = new Feature({
@@ -359,7 +387,6 @@ export function FleetMap({
         })
       })
     );
-    source.addFeature(routeLineInner);
 
     // 3. Marcador de Inicio
     const startPoint = tripHistory.points[0];
@@ -378,7 +405,6 @@ export function FleetMap({
         })
       })
     );
-    source.addFeature(startFeature);
 
     // 4. Marcador de Fin
     const endPoint = tripHistory.points[tripHistory.points.length - 1];
@@ -397,9 +423,9 @@ export function FleetMap({
         })
       })
     );
-    source.addFeature(endFeature);
 
     // 5. Marcadores de paradas registradas
+    const stopFeatures: Feature<Point>[] = [];
     tripHistory.points.forEach((pt) => {
       if (pt.stopReason) {
         const stopFeat = new Feature({
@@ -417,7 +443,7 @@ export function FleetMap({
             })
           })
         );
-        source.addFeature(stopFeat);
+        stopFeatures.push(stopFeat);
       }
     });
 
@@ -425,15 +451,36 @@ export function FleetMap({
     const markerFeature = new Feature({
       geometry: new Point(fromLonLat([startPoint.longitude, startPoint.latitude]))
     });
+    markerFeature.setStyle(
+      new Style({
+        image: new Icon({
+          src: getSvgDataUrl('#38bdf8', 'truck'),
+          rotation: (startPoint.heading * Math.PI) / 180,
+          rotateWithView: true,
+          scale: 1.2
+        }),
+        text: new Text({
+          text: `${startPoint.speed} km/h`,
+          font: 'bold 11px sans-serif',
+          offsetY: 28,
+          fill: new Fill({ color: '#ffffff' }),
+          backgroundFill: new Fill({ color: 'rgba(2, 132, 199, 0.95)' }),
+          backgroundStroke: new Stroke({ color: '#38bdf8', width: 1 }),
+          padding: [2, 6, 2, 6]
+        })
+      })
+    );
     playbackMarkerFeatureRef.current = markerFeature;
-    source.addFeature(markerFeature);
 
-    // Encuadrar la vista al viaje completo
+    // Agregar todas las entidades juntas en una sola llamada sin múltiples repintados
+    source.addFeatures([routeLine, routeLineInner, startFeature, endFeature, ...stopFeatures, markerFeature]);
+
+    // Encuadrar la vista al viaje completo suavemente
     const extent = routeLine.getGeometry()?.getExtent();
     if (extent && mapRef.current) {
       mapRef.current.getView().fit(extent, {
-        padding: [60, 60, 160, 60],
-        duration: 800
+        padding: [80, 80, 180, 80],
+        duration: 500
       });
     }
   }, [tripHistory]);
@@ -450,32 +497,18 @@ export function FleetMap({
 
     const headingRad = (playbackPoint.heading * Math.PI) / 180;
     const isStopped = !!playbackPoint.stopReason;
+    const style = playbackMarkerFeatureRef.current.getStyle() as Style | undefined;
 
-    playbackMarkerFeatureRef.current.setStyle(
-      new Style({
-        image: new Icon({
-          src: createVehicleSvgIcon(isStopped ? '#f59e0b' : '#38bdf8', 'truck'),
-          rotation: headingRad,
-          rotateWithView: true,
-          scale: 1.25
-        }),
-        text: new Text({
-          text: isStopped ? `🛑 ${playbackPoint.stopReason}` : `${playbackPoint.speed} km/h`,
-          font: 'bold 11px sans-serif',
-          offsetY: 28,
-          fill: new Fill({ color: '#ffffff' }),
-          backgroundFill: new Fill({ color: isStopped ? 'rgba(217, 119, 6, 0.95)' : 'rgba(2, 132, 199, 0.95)' }),
-          backgroundStroke: new Stroke({ color: '#38bdf8', width: 1 }),
-          padding: [2, 6, 2, 6]
-        })
-      })
-    );
-
-    // Centrar mapa si followMode está activo
-    if (followMode && mapRef.current) {
-      mapRef.current.getView().setCenter(coords);
+    // Modificar la rotación y el texto directamente sobre el estilo existente (¡cero flash/parpadeo!)
+    if (style && style.getImage()) {
+      style.getImage()?.setRotation(headingRad);
+      const text = style.getText();
+      if (text) {
+        text.setText(isStopped ? `🛑 ${playbackPoint.stopReason}` : `${playbackPoint.speed} km/h`);
+      }
+      playbackMarkerFeatureRef.current.changed();
     }
-  }, [playbackPoint, followMode]);
+  }, [playbackPoint]);
 
   const handleBasemapChange = (type: 'dark' | 'standard' | 'satellite') => {
     setActiveBasemap(type);

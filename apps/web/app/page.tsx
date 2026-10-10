@@ -53,6 +53,21 @@ export default function FleetDashboardPage() {
     }
   }, []);
 
+  const handleOpenHistory = useCallback((vehicleId: string) => {
+    setFollowMode(false);
+    fetchVehicleHistory(vehicleId);
+  }, [fetchVehicleHistory]);
+
+  const handleCloseHistory = useCallback(() => {
+    clearTripHistory();
+    setCurrentPlaybackPoint(null);
+    setFollowMode(false);
+  }, [clearTripHistory]);
+
+  const handlePlaybackPointChange = useCallback((pt: HistoricalPoint) => {
+    setCurrentPlaybackPoint(pt);
+  }, []);
+
   return (
     <main className="relative w-screen h-screen overflow-hidden flex bg-slate-950">
       {/* Barra lateral de vehículos y filtros */}
@@ -93,7 +108,7 @@ export default function FleetDashboardPage() {
             followMode={followMode}
             onToggleFollow={() => setFollowMode((prev) => !prev)}
             onTriggerStop={triggerStop}
-            onOpenHistory={fetchVehicleHistory}
+            onOpenHistory={handleOpenHistory}
           />
         )}
 
@@ -101,11 +116,8 @@ export default function FleetDashboardPage() {
         {tripHistory && (
           <RoutePlaybackBar
             history={tripHistory}
-            onPointChange={(pt) => setCurrentPlaybackPoint(pt)}
-            onClose={() => {
-              clearTripHistory();
-              setCurrentPlaybackPoint(null);
-            }}
+            onPointChange={handlePlaybackPointChange}
+            onClose={handleCloseHistory}
           />
         )}
       </div>

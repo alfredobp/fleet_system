@@ -390,23 +390,35 @@ export function useFleetTelemetry() {
 
     const points: HistoricalPoint[] = [];
     const baseTime = Date.now() - 3600 * 1000; // Hace 1 hora
+    const numPoints = 60;
 
-    wps.forEach((wp, idx) => {
-      const ptTime = baseTime + idx * 150 * 1000;
-      const isStopPoint = idx === 3 || idx === 8;
-      const nextWp = wps[(idx + 1) % wps.length];
-      const bearing = calculateBearing(wp.lat, wp.lng, nextWp.lat, nextWp.lng);
+    for (let i = 0; i < numPoints; i++) {
+      const overallProgress = i / (numPoints - 1);
+      const scaledIdx = overallProgress * (wps.length - 1);
+      const seg = Math.min(wps.length - 2, Math.floor(scaledIdx));
+      const segFrac = scaledIdx - seg;
+
+      const p1 = wps[seg];
+      const p2 = wps[seg + 1];
+
+      const lat = p1.lat + (p2.lat - p1.lat) * segFrac;
+      const lng = p1.lng + (p2.lng - p1.lng) * segFrac;
+      const heading = calculateBearing(p1.lat, p1.lng, p2.lat, p2.lng);
+      const timestamp = baseTime + Math.round(overallProgress * 3600 * 1000);
+
+      const isStopPoint = (i >= 12 && i <= 15) || (i >= 38 && i <= 40);
+      const stopReason = i >= 12 && i <= 15 ? 'Entrega a Cliente' : i >= 38 && i <= 40 ? 'Semáforo en Rojo' : undefined;
 
       points.push({
-        latitude: wp.lat,
-        longitude: wp.lng,
-        timestamp: ptTime,
+        latitude: Number(lat.toFixed(6)),
+        longitude: Number(lng.toFixed(6)),
         speed: isStopPoint ? 0 : route.targetSpeedKmh,
-        heading: bearing,
-        battery: 90 - idx * 2,
-        stopReason: isStopPoint ? (idx === 3 ? 'Entrega de Paquete' : 'Semáforo M-30') : undefined
+        heading,
+        timestamp,
+        battery: Math.round(90 - overallProgress * 20),
+        stopReason
       });
-    });
+    }
 
     setTripHistory({
       vehicleId,
