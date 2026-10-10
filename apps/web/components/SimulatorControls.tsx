@@ -11,7 +11,7 @@ interface SimulatorControlsProps {
 
 export function SimulatorControls({ status, onCommand }: SimulatorControlsProps) {
   return (
-    <div className="absolute top-4 left-1/2 -translate-x-1/2 glass-panel rounded-full px-4 py-2 flex items-center gap-4 z-20 border border-slate-700/80 shadow-2xl">
+    <div className="absolute bottom-4 right-4 glass-panel rounded-full px-4 py-2 flex items-center gap-4 z-20 border border-slate-700/80 shadow-2xl">
       <div className="flex items-center gap-2 pr-3 border-r border-slate-800">
         <Activity className={`w-4 h-4 ${status.isRunning ? 'text-emerald-400 animate-spin' : 'text-slate-500'}`} />
         <span className="text-xs font-semibold text-slate-300">

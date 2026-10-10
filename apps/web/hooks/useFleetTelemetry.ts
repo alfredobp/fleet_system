@@ -8,9 +8,12 @@ import {
   WSClientMessage,
   VehicleTripHistory,
   HistoricalPoint,
-  StopReasonType
+  StopReasonType,
+  EmergencyIncident,
+  RespondingUnit,
+  EmergencyMission
 } from '@fleet/types';
-import { PRESET_ROUTES } from '../data/routes-data';
+import { PRESET_ROUTES, PRESET_INCIDENTS, EMERGENCY_FLEET_CONFIGS } from '../data/routes-data';
 
 export interface VehicleBreadcrumb {
   lat: number;
@@ -18,13 +21,93 @@ export interface VehicleBreadcrumb {
   timestamp: number;
 }
 
-const INITIAL_VEHICLE_CONFIGS = [
-  { id: 'v-001', name: 'Trailer Trans-Iberia 01', type: 'truck' as const, plate: '9841-LMN', color: '#3b82f6', driverName: 'Carlos Gómez', routeIndex: 0 },
-  { id: 'v-002', name: 'Furgón Paquetería Prime', type: 'van' as const, plate: '3412-KZX', color: '#10b981', driverName: 'Elena Martínez', routeIndex: 1 },
-  { id: 'v-003', name: 'Cisterna Mercancías M-30', type: 'truck' as const, plate: '5120-JTR', color: '#f59e0b', driverName: 'Javier Santos', routeIndex: 2 },
-  { id: 'v-004', name: 'Express Logística Barajas', type: 'truck' as const, plate: '7723-MBV', color: '#8b5cf6', driverName: 'David Navarro', routeIndex: 3 },
-  { id: 'v-005', name: 'Moto Reparto Urgente Centro', type: 'motorcycle' as const, plate: '0045-HPL', color: '#ec4899', driverName: 'Lucía Morales', routeIndex: 4 },
-  { id: 'v-006', name: 'Supervisión de Flota Norte', type: 'car' as const, plate: '1289-KLL', color: '#06b6d4', driverName: 'Marcos Rubio', routeIndex: 5 },
+const ALL_INITIAL_VEHICLE_CONFIGS = [
+  // 1. Unidades de Emergencias 112 (Madrid)
+  {
+    id: 'veh-pol',
+    name: 'Patrulla Z-402 • Policía Municipal',
+    type: 'police' as const,
+    role: 'police' as const,
+    plate: '0112-POL',
+    color: '#3b82f6',
+    driverName: 'Oficial Delgado & Agente Ruiz',
+    routeIndex: 1,
+    emergencySpeed: 85,
+    initialLat: 40.4248,
+    initialLng: -3.6800,
+    isEmergency: true
+  },
+  {
+    id: 'veh-amb',
+    name: 'SAMUR SVA Alfa-08 • Ambulancia',
+    type: 'ambulance' as const,
+    role: 'ambulance' as const,
+    plate: '0112-SMR',
+    color: '#f59e0b',
+    driverName: 'Dra. Beltrán & Téc. Navarro',
+    routeIndex: 0,
+    emergencySpeed: 75,
+    initialLat: 40.4072,
+    initialLng: -3.6917,
+    isEmergency: true
+  },
+  {
+    id: 'veh-fire',
+    name: 'Bomba Pesada B-14 • Bomberos',
+    type: 'fire_truck' as const,
+    role: 'fire' as const,
+    plate: '0112-BMB',
+    color: '#ef4444',
+    driverName: 'Sgto. Ramos & Dotación B-14',
+    routeIndex: 2,
+    emergencySpeed: 65,
+    initialLat: 40.4503,
+    initialLng: -3.6591,
+    isEmergency: true
+  },
+  // 2. Flota comercial y logística
+  {
+    id: 'v-001',
+    name: 'Trailer Trans-Iberia 01',
+    type: 'truck' as const,
+    role: undefined,
+    plate: '9841-LMN',
+    color: '#06b6d4',
+    driverName: 'Carlos Gómez',
+    routeIndex: 0,
+    emergencySpeed: 45,
+    initialLat: 40.4370,
+    initialLng: -3.6896,
+    isEmergency: false
+  },
+  {
+    id: 'v-002',
+    name: 'Furgón Paquetería Prime',
+    type: 'van' as const,
+    role: undefined,
+    plate: '3412-KZX',
+    color: '#10b981',
+    driverName: 'Elena Martínez',
+    routeIndex: 1,
+    emergencySpeed: 35,
+    initialLat: 40.4208,
+    initialLng: -3.7061,
+    isEmergency: false
+  },
+  {
+    id: 'v-005',
+    name: 'Moto Reparto Urgente Centro',
+    type: 'motorcycle' as const,
+    role: undefined,
+    plate: '0045-HPL',
+    color: '#ec4899',
+    driverName: 'Lucía Morales',
+    routeIndex: 4,
+    emergencySpeed: 30,
+    initialLat: 40.4150,
+    initialLng: -3.7142,
+    isEmergency: false
+  }
 ];
 
 function calculateBearing(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -36,15 +119,31 @@ function calculateBearing(lat1: number, lon1: number, lat2: number, lon2: number
   return (Math.round(toDeg(Math.atan2(y, x))) + 360) % 360;
 }
 
+function calculateDistanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371e3; // Radio de la Tierra en metros
+  const φ1 = (lat1 * Math.PI) / 180;
+  const φ2 = (lat2 * Math.PI) / 180;
+  const Δφ = ((lat2 - lat1) * Math.PI) / 180;
+  const Δλ = ((lon2 - lon1) * Math.PI) / 180;
+
+  const a =
+    Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+    Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return R * c;
+}
+
 export function useFleetTelemetry() {
   const [vehicles, setVehicles] = useState<Record<string, Vehicle>>({});
   const [breadcrumbs, setBreadcrumbs] = useState<Record<string, VehicleBreadcrumb[]>>({});
   const [tripHistory, setTripHistory] = useState<VehicleTripHistory | null>(null);
+  const [activeIncident, setActiveIncident] = useState<EmergencyIncident | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'demo'>('connecting');
   const [simulatorStatus, setSimulatorStatus] = useState<SimulatorStatus>({
     isRunning: true,
     speedMultiplier: 1,
-    activeVehiclesCount: 6,
+    activeVehiclesCount: ALL_INITIAL_VEHICLE_CONFIGS.length,
     intervalMs: 1000
   });
 
@@ -53,35 +152,40 @@ export function useFleetTelemetry() {
   const demoIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isDemoModeRef = useRef<boolean>(false);
 
-  // Estados locales para la simulación cliente cuando no hay backend WS
+  // Estado mutable para la simulación local client-side
   const clientSimState = useRef<{
     vehicles: Record<string, Vehicle>;
     progress: Record<string, { currentSegment: number; segmentProgress: number }>;
+    emergencyState: Record<string, { targetLat: number; targetLng: number; approachWaypoints: Array<{ lat: number; lng: number }>; currentWpIdx: number }>;
+    activeIncident: EmergencyIncident | null;
     speedMultiplier: number;
     isRunning: boolean;
   }>({
     vehicles: {},
     progress: {},
+    emergencyState: {},
+    activeIncident: null,
     speedMultiplier: 1,
     isRunning: true
   });
 
-  // Inicializador de simulación local en el navegador
+  // Inicializador de simulación local autónoma en el navegador
   const initClientSimulation = useCallback(() => {
     if (isDemoModeRef.current) return;
     isDemoModeRef.current = true;
     setConnectionStatus('demo');
-    console.log('⚡ Modo Demo Autónomo activo (simulación client-side en Madrid)');
+    console.log('⚡ Modo Demo Autónomo activo (Emergencias 112 y Flota en Madrid)');
 
     const vMap: Record<string, Vehicle> = {};
     const trails: Record<string, VehicleBreadcrumb[]> = {};
     const now = Date.now();
 
-    INITIAL_VEHICLE_CONFIGS.forEach((cfg) => {
+    ALL_INITIAL_VEHICLE_CONFIGS.forEach((cfg) => {
+      const lat = cfg.initialLat;
+      const lng = cfg.initialLng;
       const route = PRESET_ROUTES[cfg.routeIndex] || PRESET_ROUTES[0];
-      const startWp = route.waypoints[0];
       const nextWp = route.waypoints[1] || route.waypoints[0];
-      const bearing = calculateBearing(startWp.lat, startWp.lng, nextWp.lat, nextWp.lng);
+      const bearing = calculateBearing(lat, lng, nextWp.lat, nextWp.lng);
 
       const v: Vehicle = {
         id: cfg.id,
@@ -90,21 +194,21 @@ export function useFleetTelemetry() {
         plate: cfg.plate,
         driverName: cfg.driverName,
         color: cfg.color,
-        status: 'moving',
+        status: cfg.isEmergency ? 'idle' : 'moving',
         lastTelemetry: {
           vehicleId: cfg.id,
           timestamp: now,
-          latitude: startWp.lat,
-          longitude: startWp.lng,
-          speed: route.targetSpeedKmh,
+          latitude: lat,
+          longitude: lng,
+          speed: cfg.isEmergency ? 0 : route.targetSpeedKmh,
           heading: bearing,
-          battery: 88,
-          odometer: 42150
+          battery: 95,
+          odometer: 24500
         }
       };
 
       vMap[cfg.id] = v;
-      trails[cfg.id] = [{ lat: startWp.lat, lng: startWp.lng, timestamp: now }];
+      trails[cfg.id] = [{ lat, lng, timestamp: now }];
       clientSimState.current.progress[cfg.id] = { currentSegment: 0, segmentProgress: 0 };
     });
 
@@ -120,8 +224,154 @@ export function useFleetTelemetry() {
 
       const updatedVehicles = { ...state.vehicles };
       const ts = Date.now();
+      const inc = state.activeIncident;
 
-      INITIAL_VEHICLE_CONFIGS.forEach((cfg) => {
+      // 1. Simulación de unidades de emergencia si hay incidente activo
+      if (inc) {
+        let allArrived = true;
+        const TACTICAL_OFFSETS: Record<string, { dLat: number; dLng: number; heading: number }> = {
+          police: { dLat: 0.00018, dLng: -0.00022, heading: 45 },
+          fire: { dLat: -0.00012, dLng: -0.00014, heading: 90 },
+          ambulance: { dLat: -0.00020, dLng: 0.00018, heading: 135 }
+        };
+
+        ALL_INITIAL_VEHICLE_CONFIGS.filter((c) => c.isEmergency).forEach((cfg) => {
+          const v = updatedVehicles[cfg.id];
+          if (!v) return;
+
+          const eState = state.emergencyState[cfg.id];
+          if (!eState) return;
+
+          const currentDist = calculateDistanceMeters(v.lastTelemetry.latitude, v.lastTelemetry.longitude, eState.targetLat, eState.targetLng);
+
+          if (currentDist <= 20) {
+            // ¡Llegada al puesto táctico asignado!
+            if (v.status !== 'on_scene') {
+              v.status = 'on_scene';
+              v.lastTelemetry.speed = 0;
+              v.lastTelemetry.latitude = eState.targetLat;
+              v.lastTelemetry.longitude = eState.targetLng;
+
+              const offset = TACTICAL_OFFSETS[cfg.role || 'police'];
+              if (offset) {
+                v.lastTelemetry.heading = offset.heading;
+              }
+
+              const unitRef = inc.units.find((u) => u.vehicleId === v.id);
+              if (unitRef) {
+                unitRef.status = 'arrived';
+                unitRef.arrived = true;
+                unitRef.etaSeconds = 0;
+                unitRef.distanceMeters = 0;
+                unitRef.speedKmh = 0;
+              }
+
+              if (v.emergencyMission) {
+                v.emergencyMission.status = 'arrived';
+                v.emergencyMission.etaSeconds = 0;
+                v.emergencyMission.distanceRemainingMeters = 0;
+              }
+            }
+          } else {
+            allArrived = false;
+
+            const wps = eState.approachWaypoints;
+            const nextTarget = wps[eState.currentWpIdx] || { lat: eState.targetLat, lng: eState.targetLng };
+            const distToNext = calculateDistanceMeters(v.lastTelemetry.latitude, v.lastTelemetry.longitude, nextTarget.lat, nextTarget.lng);
+
+            const speedKmh = cfg.emergencySpeed;
+            const stepMeters = (speedKmh * 1000 / 3600) * state.speedMultiplier;
+            const stepRatio = Math.min(1.0, stepMeters / Math.max(1, distToNext));
+
+            const newLat = v.lastTelemetry.latitude + (nextTarget.lat - v.lastTelemetry.latitude) * stepRatio;
+            const newLng = v.lastTelemetry.longitude + (nextTarget.lng - v.lastTelemetry.longitude) * stepRatio;
+            const heading = calculateBearing(v.lastTelemetry.latitude, v.lastTelemetry.longitude, nextTarget.lat, nextTarget.lng);
+
+            if (distToNext <= 35 && eState.currentWpIdx < wps.length - 1) {
+              eState.currentWpIdx += 1;
+            }
+
+            const remDist = calculateDistanceMeters(newLat, newLng, eState.targetLat, eState.targetLng);
+            const etaSec = Math.max(1, Math.round(remDist / ((speedKmh * 1000) / 3600)));
+
+            v.lastTelemetry = {
+              ...v.lastTelemetry,
+              timestamp: ts,
+              latitude: Number(newLat.toFixed(6)),
+              longitude: Number(newLng.toFixed(6)),
+              heading: Math.round(heading),
+              speed: speedKmh
+            };
+
+            if (v.emergencyMission) {
+              v.emergencyMission.etaSeconds = etaSec;
+              v.emergencyMission.distanceRemainingMeters = Math.round(remDist);
+            }
+
+            const unitRef = inc.units.find((u) => u.vehicleId === v.id);
+            if (unitRef) {
+              unitRef.etaSeconds = etaSec;
+              unitRef.distanceMeters = Math.round(remDist);
+              unitRef.speedKmh = speedKmh;
+            }
+
+            setBreadcrumbs((prev) => {
+              const trail = prev[cfg.id] || [];
+              const nextTrail = [...trail, { lat: newLat, lng: newLng, timestamp: ts }];
+              if (nextTrail.length > 35) nextTrail.shift();
+              return { ...prev, [cfg.id]: nextTrail };
+            });
+          }
+        });
+
+        // Progresión activa de la atención de la emergencia una vez desplegados
+        const prevProg = inc.interventionProgress || 0;
+        let newProg = prevProg;
+
+        if (allArrived) {
+          newProg = Math.min(100, Math.round(prevProg + 4 * state.speedMultiplier));
+          inc.interventionProgress = newProg;
+
+          if (newProg < 30) {
+            inc.status = 'on_scene';
+            inc.interventionPhase = 'Fase 1: Aseguramiento perimetral y corte de vía';
+            inc.units.forEach((u) => {
+              if (u.role === 'police') u.actionText = '🚨 Corte de vía establecido. Perímetro de seguridad de 50m activo.';
+              if (u.role === 'fire') u.actionText = '🚨 Mangueras desplegadas. Enfriando derrame con espuma ignífuga.';
+              if (u.role === 'ambulance') u.actionText = '🚨 Accediendo al habitáculo. Triaje inicial de víctimas.';
+            });
+          } else if (newProg < 75) {
+            inc.status = 'on_scene';
+            inc.interventionPhase = 'Fase 2: Excarcelación hidráulica y estabilización de heridos';
+            inc.units.forEach((u) => {
+              if (u.role === 'police') u.actionText = '🚨 Tráfico desviado por vías alternativas. Atestados recopilando datos.';
+              if (u.role === 'fire') u.actionText = '🚨 Corte de pilares con cizalla hidráulica para liberar atrapados.';
+              if (u.role === 'ambulance') u.actionText = '🚨 2 heridos inmovilizados con collarín y sueroterapia.';
+            });
+          } else if (newProg < 100) {
+            inc.status = 'on_scene';
+            inc.interventionPhase = 'Fase 3: Carga en ambulancia y retirada de vehículos';
+            inc.units.forEach((u) => {
+              if (u.role === 'police') u.actionText = '🚨 Grúa municipal asegurando los turismos accidentados.';
+              if (u.role === 'fire') u.actionText = '✅ Atrapados liberados con éxito. Limpieza de calzada.';
+              if (u.role === 'ambulance') u.actionText = '🚨 Pacientes monitorizados en el interior del SVA.';
+            });
+          } else {
+            inc.status = 'under_control';
+            inc.interventionPhase = '✅ Incidente Controlado: Evacuación sanitaria y reapertura';
+            inc.units.forEach((u) => {
+              if (u.role === 'police') u.actionText = '✅ Calzada declarada segura y tráfico restablecido.';
+              if (u.role === 'fire') u.actionText = '✅ Incendio y vertido neutralizados. Dotación lista.';
+              if (u.role === 'ambulance') u.actionText = '🚨 Evacuación urgente con preaviso al Hospital Clínico.';
+            });
+          }
+        }
+
+        setActiveIncident({ ...inc });
+      }
+
+      // 2. Simulación de vehículos logísticos ordinarios
+      ALL_INITIAL_VEHICLE_CONFIGS.filter((c) => !c.isEmergency).forEach((cfg) => {
         const v = updatedVehicles[cfg.id];
         if (!v) return;
 
@@ -129,7 +379,6 @@ export function useFleetTelemetry() {
         const wps = route.waypoints;
         const prog = state.progress[cfg.id];
 
-        // Manejo de parada activa
         if (v.currentStop && v.currentStop.remainingSeconds > 0) {
           const rem = Math.max(0, v.currentStop.remainingSeconds - Math.round(state.speedMultiplier));
           if (rem === 0) {
@@ -144,7 +393,6 @@ export function useFleetTelemetry() {
           return;
         }
 
-        // Progreso a lo largo de los waypoints
         const p1 = wps[prog.currentSegment];
         const nextSeg = (prog.currentSegment + 1) % wps.length;
         const p2 = wps[nextSeg];
@@ -232,6 +480,9 @@ export function useFleetTelemetry() {
             setVehicles(vMap);
             setBreadcrumbs(initialTrails);
             setSimulatorStatus(msg.payload.simulator);
+            if (msg.payload.incident) {
+              setActiveIncident(msg.payload.incident);
+            }
           } else if (msg.type === 'TELEMETRY_UPDATE') {
             const t = msg.payload;
 
@@ -243,7 +494,8 @@ export function useFleetTelemetry() {
                 [t.vehicleId]: {
                   ...existing,
                   lastTelemetry: t,
-                  currentStop: t.currentStop
+                  currentStop: t.currentStop,
+                  emergencyMission: t.emergencyMission
                 }
               };
             });
@@ -261,7 +513,7 @@ export function useFleetTelemetry() {
               };
             });
           } else if (msg.type === 'VEHICLE_STATUS_CHANGE') {
-            const { vehicleId, status, currentStop } = msg.payload;
+            const { vehicleId, status, currentStop, emergencyMission } = msg.payload;
             setVehicles((prev) => {
               const existing = prev[vehicleId];
               if (!existing) return prev;
@@ -270,10 +522,13 @@ export function useFleetTelemetry() {
                 [vehicleId]: {
                   ...existing,
                   status,
-                  currentStop
+                  currentStop,
+                  emergencyMission: emergencyMission ?? existing.emergencyMission
                 }
               };
             });
+          } else if (msg.type === 'EMERGENCY_UPDATE') {
+            setActiveIncident(msg.payload);
           } else if (msg.type === 'SIMULATOR_STATUS') {
             setSimulatorStatus(msg.payload);
           } else if (msg.type === 'VEHICLE_HISTORY_DATA') {
@@ -310,6 +565,155 @@ export function useFleetTelemetry() {
     };
   }, [connect]);
 
+  // Disparar incidente de emergencia (Cibeles, Gran Vía, M-30 o punto personalizado)
+  const triggerEmergency = useCallback((
+    incidentId?: string,
+    latitude?: number,
+    longitude?: number,
+    title?: string,
+    address?: string
+  ) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'TRIGGER_EMERGENCY',
+        incidentId,
+        latitude,
+        longitude,
+        title,
+        address
+      }));
+      return;
+    }
+
+    // Modo local autónomo
+    const preset = PRESET_INCIDENTS.find((p) => p.id === incidentId) || PRESET_INCIDENTS[0];
+    const targetLat = latitude ?? preset.latitude;
+    const targetLng = longitude ?? preset.longitude;
+    const incTitle = title ?? preset.title;
+    const incAddress = address ?? preset.address;
+
+    const state = clientSimState.current;
+    const units: RespondingUnit[] = [];
+
+    const TACTICAL_OFFSETS: Record<string, { dLat: number; dLng: number; heading: number }> = {
+      police: { dLat: 0.00018, dLng: -0.00022, heading: 45 },
+      fire: { dLat: -0.00012, dLng: -0.00014, heading: 90 },
+      ambulance: { dLat: -0.00020, dLng: 0.00018, heading: 135 }
+    };
+
+    ALL_INITIAL_VEHICLE_CONFIGS.filter((c) => c.isEmergency).forEach((cfg) => {
+      const v = state.vehicles[cfg.id];
+      if (!v) return;
+
+      const offset = TACTICAL_OFFSETS[cfg.role || 'police'] || { dLat: 0, dLng: 0, heading: 0 };
+      const tacticalLat = targetLat + offset.dLat;
+      const tacticalLng = targetLng + offset.dLng;
+
+      const dist = calculateDistanceMeters(v.lastTelemetry.latitude, v.lastTelemetry.longitude, tacticalLat, tacticalLng);
+      const speedMs = (cfg.emergencySpeed * 1000) / 3600;
+      const etaSeconds = Math.max(10, Math.round(dist / speedMs));
+
+      // Crear waypoints de aproximación
+      const approachWps: Array<{ lat: number; lng: number }> = [];
+      const steps = 4;
+      for (let s = 1; s <= steps; s++) {
+        const f = s / steps;
+        approachWps.push({
+          lat: v.lastTelemetry.latitude + (tacticalLat - v.lastTelemetry.latitude) * f,
+          lng: v.lastTelemetry.longitude + (tacticalLng - v.lastTelemetry.longitude) * f
+        });
+      }
+
+      state.emergencyState[cfg.id] = {
+        targetLat: tacticalLat,
+        targetLng: tacticalLng,
+        approachWaypoints: approachWps,
+        currentWpIdx: 0
+      };
+
+      v.status = 'responding';
+      v.lastTelemetry.speed = cfg.emergencySpeed;
+
+      const mission: EmergencyMission = {
+        incidentId: preset.id,
+        role: cfg.role!,
+        targetLat: tacticalLat,
+        targetLng: tacticalLng,
+        address: incAddress,
+        etaSeconds,
+        distanceRemainingMeters: Math.round(dist),
+        status: 'en_route'
+      };
+
+      v.emergencyMission = mission;
+      v.lastTelemetry.emergencyMission = mission;
+
+      units.push({
+        vehicleId: cfg.id,
+        role: cfg.role!,
+        name: cfg.name,
+        plate: cfg.plate,
+        speedKmh: cfg.emergencySpeed,
+        etaSeconds,
+        distanceMeters: Math.round(dist),
+        status: 'responding',
+        arrived: false,
+        actionText: cfg.role === 'police'
+          ? 'En camino • Prioridad Código 3 (Acordonamiento y corte de vía)'
+          : cfg.role === 'ambulance'
+          ? 'En camino • Soporte Vital Avanzado (Atención médica y triaje)'
+          : 'En camino • Tren de Extinción (Bomba pesada y excarcelación)'
+      });
+    });
+
+    const newInc: EmergencyIncident = {
+      id: preset.id,
+      title: incTitle,
+      description: preset.description,
+      latitude: targetLat,
+      longitude: targetLng,
+      address: incAddress,
+      severity: preset.severity,
+      status: 'units_responding',
+      createdAt: Date.now(),
+      units,
+      interventionProgress: 0,
+      interventionPhase: 'Fase 1: Respuesta y aproximación rápida de dotaciones'
+    };
+
+    state.activeIncident = newInc;
+    setActiveIncident(newInc);
+    setVehicles({ ...state.vehicles });
+  }, []);
+
+  // Resolver incidente y reanudar normalidad
+  const resolveEmergency = useCallback(() => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'RESOLVE_EMERGENCY',
+        incidentId: activeIncident?.id || 'all'
+      }));
+      return;
+    }
+
+    const state = clientSimState.current;
+    state.activeIncident = null;
+    state.emergencyState = {};
+
+    ALL_INITIAL_VEHICLE_CONFIGS.filter((c) => c.isEmergency).forEach((cfg) => {
+      const v = state.vehicles[cfg.id];
+      if (v) {
+        v.status = 'idle';
+        v.emergencyMission = undefined;
+        v.lastTelemetry.emergencyMission = undefined;
+        v.lastTelemetry.speed = 0;
+      }
+    });
+
+    setActiveIncident(null);
+    setVehicles({ ...state.vehicles });
+  }, [activeIncident]);
+
   const sendSimulatorCommand = useCallback((command: 'play' | 'pause' | 'set_speed', speedMultiplier?: number) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       const msg: WSClientMessage = {
@@ -319,7 +723,6 @@ export function useFleetTelemetry() {
       };
       wsRef.current.send(JSON.stringify(msg));
     } else {
-      // Manejo local en modo demo
       const state = clientSimState.current;
       if (command === 'play') state.isRunning = true;
       if (command === 'pause') state.isRunning = false;
@@ -343,7 +746,6 @@ export function useFleetTelemetry() {
         duration
       }));
     } else {
-      // Manejo local en modo demo
       const reasonLabels: Record<string, string> = {
         traffic_light: 'Semáforo en Rojo',
         delivery: 'Entrega a Cliente',
@@ -383,13 +785,12 @@ export function useFleetTelemetry() {
       return;
     }
 
-    // Generador de histórico local para modo Demo (GitHub Pages)
-    const cfg = INITIAL_VEHICLE_CONFIGS.find((c) => c.id === vehicleId) || INITIAL_VEHICLE_CONFIGS[0];
+    const cfg = ALL_INITIAL_VEHICLE_CONFIGS.find((c) => c.id === vehicleId) || ALL_INITIAL_VEHICLE_CONFIGS[0];
     const route = PRESET_ROUTES[cfg.routeIndex] || PRESET_ROUTES[0];
     const wps = route.waypoints;
 
     const points: HistoricalPoint[] = [];
-    const baseTime = Date.now() - 3600 * 1000; // Hace 1 hora
+    const baseTime = Date.now() - 3600 * 1000;
     const numPoints = 60;
 
     for (let i = 0; i < numPoints; i++) {
@@ -438,8 +839,8 @@ export function useFleetTelemetry() {
   }, []);
 
   const vehicleList = Object.values(vehicles);
-  const movingCount = vehicleList.filter((v) => v.status === 'moving').length;
-  const idleCount = vehicleList.filter((v) => v.status === 'idle' || v.status === 'stopped').length;
+  const movingCount = vehicleList.filter((v) => v.status === 'moving' || v.status === 'responding').length;
+  const idleCount = vehicleList.filter((v) => v.status === 'idle' || v.status === 'stopped' || v.status === 'on_scene').length;
   const avgSpeed = vehicleList.length > 0
     ? Math.round(vehicleList.reduce((acc, v) => acc + v.lastTelemetry.speed, 0) / vehicleList.length)
     : 0;
@@ -449,6 +850,9 @@ export function useFleetTelemetry() {
     vehicleList,
     breadcrumbs,
     tripHistory,
+    activeIncident,
+    triggerEmergency,
+    resolveEmergency,
     fetchVehicleHistory,
     clearTripHistory,
     connectionStatus,

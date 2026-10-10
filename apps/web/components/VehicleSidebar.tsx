@@ -29,6 +29,12 @@ interface VehicleSidebarProps {
 
 function getVehicleIcon(type: string) {
   switch (type) {
+    case 'police':
+      return <span className="text-lg">🚓</span>;
+    case 'fire_truck':
+      return <span className="text-lg">🚒</span>;
+    case 'ambulance':
+      return <span className="text-lg">🚑</span>;
     case 'truck':
       return <Truck className="w-5 h-5" />;
     case 'motorcycle':
@@ -41,6 +47,26 @@ function getVehicleIcon(type: string) {
 }
 
 function getStatusBadge(vehicle: Vehicle) {
+  if (vehicle.status === 'responding') {
+    const eta = vehicle.emergencyMission?.etaSeconds;
+    const etaText = eta !== undefined ? ` (${eta}s)` : '';
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-black bg-rose-600/30 text-rose-300 border border-rose-500/60 animate-pulse">
+        <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-ping"></span>
+        🚨 CÓDIGO 3{etaText}
+      </span>
+    );
+  }
+
+  if (vehicle.status === 'on_scene') {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/50">
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+        🚨 EN EL LUGAR
+      </span>
+    );
+  }
+
   if (vehicle.currentStop) {
     return (
       <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/20 text-amber-300 border border-amber-500/40">
@@ -60,9 +86,9 @@ function getStatusBadge(vehicle: Vehicle) {
   }
 
   return (
-    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
-      <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-      Detenido
+    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-700/30 text-slate-400 border border-slate-700/50">
+      <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+      En Base / Libre
     </span>
   );
 }

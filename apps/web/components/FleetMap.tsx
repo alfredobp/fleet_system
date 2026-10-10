@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useMemo } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Map from 'ol/Map.js';
 import View from 'ol/View.js';
 import TileLayer from 'ol/layer/Tile.js';
@@ -12,8 +12,8 @@ import Feature from 'ol/Feature.js';
 import Point from 'ol/geom/Point.js';
 import LineString from 'ol/geom/LineString.js';
 import { Style, Stroke, Fill, Text, Icon } from 'ol/style.js';
-import { fromLonLat } from 'ol/proj.js';
-import { Vehicle, VehicleTripHistory, HistoricalPoint } from '@fleet/types';
+import { fromLonLat, toLonLat } from 'ol/proj.js';
+import { Vehicle, VehicleTripHistory, HistoricalPoint, EmergencyIncident } from '@fleet/types';
 import { VehicleBreadcrumb } from '../hooks/useFleetTelemetry';
 
 interface FleetMapProps {
@@ -24,31 +24,75 @@ interface FleetMapProps {
   onSelectVehicle: (id: string | null) => void;
   tripHistory?: VehicleTripHistory | null;
   playbackPoint?: HistoricalPoint | null;
+  activeIncident?: EmergencyIncident | null;
+  onMapClickCoordinates?: (lat: number, lng: number) => void;
 }
 
-// Genera un icono SVG rotativo para el vehículo con su color y flecha de dirección
-function createVehicleSvgIcon(color: string, type: string): string {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 44 44">
+// Genera un icono SVG rotativo para el vehículo según su tipo y color de servicio
+function createVehicleSvgIcon(color: string, type: string, isResponding = false): string {
+  let emblemSvg = '<circle cx="22" cy="22" r="3" fill="#ffffff"/>';
+
+  if (type === 'police') {
+    emblemSvg = `
+      <!-- Sirenas policiales azul/rojo -->
+      <rect x="16" y="20" width="5" height="4" rx="1.5" fill="#3b82f6"/>
+      <rect x="23" y="20" width="5" height="4" rx="1.5" fill="#ef4444"/>
+      <circle cx="22" cy="22" r="1.5" fill="#ffffff"/>
+    `;
+  } else if (type === 'fire_truck') {
+    emblemSvg = `
+      <!-- Sirena de bomberos roja/ámbar y escalera -->
+      <rect x="15" y="19" width="6" height="4" rx="1" fill="#ef4444"/>
+      <rect x="23" y="19" width="6" height="4" rx="1" fill="#f59e0b"/>
+      <line x1="22" y1="16" x2="22" y2="28" stroke="#ffffff" stroke-width="2"/>
+    `;
+  } else if (type === 'ambulance') {
+    emblemSvg = `
+      <!-- Cruz médica Star of Life -->
+      <rect x="20" y="18" width="4" height="8" rx="1" fill="#ffffff"/>
+      <rect x="18" y="20" width="8" height="4" rx="1" fill="#ffffff"/>
+      <rect x="15" y="17" width="4" height="3" rx="1" fill="#3b82f6"/>
+      <rect x="25" y="17" width="4" height="3" rx="1" fill="#f59e0b"/>
+    `;
+  }
+
+  const strokeWidth = isResponding ? '3.5' : '2.5';
+  const strokeColor = isResponding ? '#ffffff' : color;
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="46" height="46" viewBox="0 0 44 44">
     <defs>
-      <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-        <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.6"/>
+      <filter id="glow" x="-25%" y="-25%" width="150%" height="150%">
+        <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity="0.7"/>
       </filter>
     </defs>
     <!-- Halo exterior -->
-    <circle cx="22" cy="22" r="17" fill="#0f172a" stroke="${color}" stroke-width="2.5" filter="url(#glow)"/>
-    <!-- Flecha de rumbo (apunta hacia arriba 0°) -->
-    <path d="M 22 10 L 29 26 L 22 22 L 15 26 Z" fill="${color}"/>
-    <circle cx="22" cy="22" r="3" fill="#ffffff"/>
+    <circle cx="22" cy="22" r="18" fill="#0f172a" stroke="${strokeColor}" stroke-width="${strokeWidth}" filter="url(#glow)"/>
+    <!-- Flecha de rumbo (0° arriba) -->
+    <path d="M 22 9 L 30 26 L 22 22 L 14 26 Z" fill="${color}"/>
+    ${emblemSvg}
+  </svg>`;
+
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+
+// Icono SVG para el epicentro del incidente de emergencia
+function createIncidentSvgIcon(): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="56" height="56" viewBox="0 0 56 56">
+    <circle cx="28" cy="28" r="26" fill="rgba(239, 68, 68, 0.25)" stroke="#ef4444" stroke-width="2" stroke-dasharray="4 2"/>
+    <circle cx="28" cy="28" r="18" fill="#dc2626" stroke="#ffffff" stroke-width="3"/>
+    <!-- Icono de fuego / alerta -->
+    <path d="M 28 17 C 28 17 33 22 33 27 C 33 30 30.5 33 28 33 C 25.5 33 23 30 23 27 C 23 23 26 20 28 17 Z" fill="#fef08a"/>
+    <circle cx="28" cy="29" r="2.5" fill="#ffffff"/>
   </svg>`;
   return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
 }
 
 // Caché global de iconos para evitar re-decodificar SVG en cada frame
 const svgCache: Record<string, string> = {};
-function getSvgDataUrl(color: string, type: string): string {
-  const key = `${color}_${type}`;
+function getSvgDataUrl(color: string, type: string, isResponding = false): string {
+  const key = `${color}_${type}_${isResponding}`;
   if (!svgCache[key]) {
-    svgCache[key] = createVehicleSvgIcon(color, type);
+    svgCache[key] = createVehicleSvgIcon(color, type, isResponding);
   }
   return svgCache[key];
 }
@@ -60,13 +104,16 @@ export function FleetMap({
   followMode,
   onSelectVehicle,
   tripHistory,
-  playbackPoint
+  playbackPoint,
+  activeIncident,
+  onMapClickCoordinates
 }: FleetMapProps) {
   const mapElementRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<Map | null>(null);
   const vectorSourceRef = useRef<VectorSource>(new VectorSource());
   const trailSourceRef = useRef<VectorSource>(new VectorSource());
   const playbackSourceRef = useRef<VectorSource>(new VectorSource());
+  const emergencySourceRef = useRef<VectorSource>(new VectorSource());
   const playbackMarkerFeatureRef = useRef<Feature<Point> | null>(null);
 
   const vehicleLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
@@ -90,6 +137,9 @@ export function FleetMap({
 
   const selectedVehicleIdRef = useRef(selectedVehicleId);
   selectedVehicleIdRef.current = selectedVehicleId;
+
+  const onMapClickCoordinatesRef = useRef(onMapClickCoordinates);
+  onMapClickCoordinatesRef.current = onMapClickCoordinates;
 
   // Inicialización ÚNICA del mapa OpenLayers
   useEffect(() => {
@@ -134,10 +184,16 @@ export function FleetMap({
     });
     trailLayerRef.current = trailLayer;
 
+    // Capa vectorial para el incidente de emergencia y líneas de despacho 112
+    const emergencyLayer = new VectorLayer({
+      source: emergencySourceRef.current,
+      zIndex: 15
+    });
+
     // Capa vectorial de vehículos en tiempo real
     const vehicleLayer = new VectorLayer({
       source: vectorSourceRef.current,
-      zIndex: 10
+      zIndex: 20
     });
     vehicleLayerRef.current = vehicleLayer;
 
@@ -152,7 +208,7 @@ export function FleetMap({
 
     const map = new Map({
       target: mapElementRef.current,
-      layers: [osmDarkLayer, osmStandardLayer, satelliteLayer, trailLayer, vehicleLayer, playbackLayer],
+      layers: [osmDarkLayer, osmStandardLayer, satelliteLayer, trailLayer, emergencyLayer, vehicleLayer, playbackLayer],
       view: new View({
         center: initialCenter,
         zoom: 13,
@@ -161,7 +217,7 @@ export function FleetMap({
       })
     });
 
-    // Evento de clic en vehículo
+    // Evento de clic en mapa: selección de vehículo o coordenadas para nuevo incidente
     map.on('click', (event) => {
       let clickedVehicleId: string | null = null;
       map.forEachFeatureAtPixel(event.pixel, (feature) => {
@@ -171,7 +227,14 @@ export function FleetMap({
           return true;
         }
       });
-      onSelectVehicleRef.current(clickedVehicleId);
+
+      if (clickedVehicleId) {
+        onSelectVehicleRef.current(clickedVehicleId);
+      } else {
+        onSelectVehicleRef.current(null);
+        const lonLat = toLonLat(event.coordinate);
+        onMapClickCoordinatesRef.current?.(lonLat[1], lonLat[0]);
+      }
     });
 
     mapRef.current = map;
@@ -192,19 +255,112 @@ export function FleetMap({
     }
   }, [tripHistory]);
 
-  // Actualizar estilo del vehículo en tiempo real reutilizando el Icon en caché
+  // Visualización del Incidente y Líneas de Aproximación 112
+  useEffect(() => {
+    const source = emergencySourceRef.current;
+    source.clear();
+
+    if (!activeIncident) return;
+
+    const incCoords = fromLonLat([activeIncident.longitude, activeIncident.latitude]);
+
+    // 1. Marcador del Incidente con Baliza de Emergencia
+    const incidentFeature = new Feature({
+      geometry: new Point(incCoords)
+    });
+
+    incidentFeature.setStyle(
+      new Style({
+        image: new Icon({
+          src: createIncidentSvgIcon(),
+          scale: 1.15
+        }),
+        text: new Text({
+          text: `🚨 ${activeIncident.title.toUpperCase()}\n📍 ${activeIncident.address}`,
+          font: 'bold 11px sans-serif',
+          offsetY: -36,
+          fill: new Fill({ color: '#ffffff' }),
+          backgroundFill: new Fill({ color: 'rgba(185, 28, 28, 0.95)' }),
+          backgroundStroke: new Stroke({ color: '#fca5a5', width: 1.5 }),
+          padding: [4, 8, 4, 8]
+        })
+      })
+    );
+
+    const featuresToAdd: Feature[] = [incidentFeature];
+
+    // 2. Líneas de despacho desde cada vehículo que acude hacia el incidente
+    activeIncident.units.forEach((unit) => {
+      const v = vehicles[unit.vehicleId];
+      if (!v) return;
+
+      const vCoords = fromLonLat([v.lastTelemetry.longitude, v.lastTelemetry.latitude]);
+      const approachLine = new Feature({
+        geometry: new LineString([vCoords, incCoords])
+      });
+
+      const strokeColor =
+        unit.role === 'police'
+          ? 'rgba(59, 130, 246, 0.85)'
+          : unit.role === 'ambulance'
+          ? 'rgba(245, 158, 11, 0.85)'
+          : 'rgba(239, 68, 68, 0.85)';
+
+      approachLine.setStyle(
+        new Style({
+          stroke: new Stroke({
+            color: strokeColor,
+            width: unit.status === 'arrived' ? 1.5 : 3.5,
+            lineDash: unit.status === 'arrived' ? [3, 3] : [8, 4]
+          })
+        })
+      );
+
+      featuresToAdd.push(approachLine);
+    });
+
+    source.addFeatures(featuresToAdd);
+  }, [activeIncident, vehicles]);
+
+  // Actualizar estilo del vehículo en tiempo real (refleja emergencias, ETA, paradas y rumbo)
   const updateFeatureStyle = (feature: Feature<Point>, vehicle: Vehicle, isSelected: boolean, headingDeg: number) => {
     const headingRad = (headingDeg * Math.PI) / 180;
+    const isResponding = vehicle.status === 'responding';
+    const isOnScene = vehicle.status === 'on_scene';
     const isStopped = !!vehicle.currentStop;
-    const labelText = isStopped
-      ? `${vehicle.name.split(' ')[0]} • 🛑 ${vehicle.currentStop!.remainingSeconds}s`
-      : `${vehicle.name.split(' ')[0]} • ${vehicle.lastTelemetry.speed} km/h`;
 
-    const iconColor = isSelected ? '#38bdf8' : isStopped ? '#f59e0b' : vehicle.color;
+    let labelText = `${vehicle.name.split(' ')[0]} • ${vehicle.lastTelemetry.speed} km/h`;
+    let bgFillColor = 'rgba(15, 23, 42, 0.85)';
+    let strokeColor = 'rgba(255, 255, 255, 0.15)';
+
+    if (isResponding && vehicle.emergencyMission) {
+      const eta = vehicle.emergencyMission.etaSeconds;
+      const etaStr = eta >= 60 ? `${Math.floor(eta / 60)}m ${eta % 60}s` : `${eta}s`;
+      const roleIcon = vehicle.type === 'police' ? '🚓' : vehicle.type === 'ambulance' ? '🚑' : '🚒';
+      labelText = `${roleIcon} ETA: ${etaStr} • ${vehicle.lastTelemetry.speed} km/h`;
+      bgFillColor = vehicle.type === 'police'
+        ? 'rgba(29, 78, 216, 0.95)'
+        : vehicle.type === 'ambulance'
+        ? 'rgba(217, 119, 6, 0.95)'
+        : 'rgba(185, 28, 28, 0.95)';
+      strokeColor = '#ffffff';
+    } else if (isOnScene) {
+      labelText = `🚨 EN EL LUGAR (${vehicle.plate})`;
+      bgFillColor = 'rgba(185, 28, 28, 0.95)';
+      strokeColor = '#facc15';
+    } else if (isStopped) {
+      labelText = `${vehicle.name.split(' ')[0]} • 🛑 ${vehicle.currentStop!.remainingSeconds}s`;
+      bgFillColor = 'rgba(180, 83, 9, 0.95)';
+      strokeColor = '#fbbf24';
+    } else if (isSelected) {
+      bgFillColor = 'rgba(2, 132, 199, 0.95)';
+      strokeColor = '#38bdf8';
+    }
+
+    const iconColor = isSelected ? '#38bdf8' : isOnScene ? '#ef4444' : isStopped ? '#f59e0b' : vehicle.color;
     const existingStyle = feature.getStyle() as Style | undefined;
 
     if (existingStyle && existingStyle.getImage()) {
-      // Reutilizar la instancia de imagen para evitar redecodificaciones y flash
       existingStyle.getImage()?.setRotation(headingRad);
       const text = existingStyle.getText();
       if (text) {
@@ -215,23 +371,18 @@ export function FleetMap({
       feature.setStyle(
         new Style({
           image: new Icon({
-            src: getSvgDataUrl(iconColor, vehicle.type),
+            src: getSvgDataUrl(iconColor, vehicle.type, isResponding),
             rotation: headingRad,
             rotateWithView: true,
-            scale: isSelected ? 1.15 : 0.95
+            scale: isResponding || isOnScene || isSelected ? 1.25 : 0.95
           }),
           text: new Text({
             text: labelText,
-            font: isSelected || isStopped ? 'bold 11px sans-serif' : '10px sans-serif',
-            offsetY: 26,
-            fill: new Fill({ color: isSelected || isStopped ? '#ffffff' : '#cbd5e1' }),
-            backgroundFill: new Fill({
-              color: isSelected ? 'rgba(2, 132, 199, 0.95)' : isStopped ? 'rgba(180, 83, 9, 0.95)' : 'rgba(15, 23, 42, 0.85)'
-            }),
-            backgroundStroke: new Stroke({
-              color: isSelected ? '#38bdf8' : isStopped ? '#fbbf24' : 'rgba(255, 255, 255, 0.15)',
-              width: 1
-            }),
+            font: isResponding || isOnScene || isSelected ? 'bold 11px sans-serif' : '10px sans-serif',
+            offsetY: 28,
+            fill: new Fill({ color: '#ffffff' }),
+            backgroundFill: new Fill({ color: bgFillColor }),
+            backgroundStroke: new Stroke({ color: strokeColor, width: 1.5 }),
             padding: [2, 6, 2, 6]
           })
         })
@@ -241,7 +392,7 @@ export function FleetMap({
 
   // Actualización de coordenadas objetivo cuando llega telemetría
   useEffect(() => {
-    if (tripHistory) return; // Si estamos en histórico, no procesar cambios de mapa en vivo
+    if (tripHistory) return;
     const vectorSource = vectorSourceRef.current;
 
     Object.values(vehicles).forEach((vehicle) => {
@@ -284,14 +435,13 @@ export function FleetMap({
         delete animatedPositionsRef.current[id];
       }
     });
-  }, [vehicles, selectedVehicleId, tripHistory]);
+  }, [vehicles, selectedVehicleId, tripHistory, activeIncident]);
 
   // Bucle de animación continua con LERP
   useEffect(() => {
     const LERP_FACTOR = 0.08;
 
     const animate = () => {
-      // Si el modo histórico está activo, pausar el ciclo LERP en segundo plano
       if (!tripHistory) {
         let followedCoords: [number, number] | null = null;
 
@@ -362,7 +512,6 @@ export function FleetMap({
 
     const coords = tripHistory.points.map((pt) => fromLonLat([pt.longitude, pt.latitude]));
 
-    // 1. Polilínea del viaje histórico
     const routeLine = new Feature({
       geometry: new LineString(coords)
     });
@@ -375,7 +524,6 @@ export function FleetMap({
       })
     );
 
-    // 2. Línea interior luminosa (efecto neón)
     const routeLineInner = new Feature({
       geometry: new LineString(coords)
     });
@@ -388,7 +536,6 @@ export function FleetMap({
       })
     );
 
-    // 3. Marcador de Inicio
     const startPoint = tripHistory.points[0];
     const startFeature = new Feature({
       geometry: new Point(fromLonLat([startPoint.longitude, startPoint.latitude]))
@@ -406,7 +553,6 @@ export function FleetMap({
       })
     );
 
-    // 4. Marcador de Fin
     const endPoint = tripHistory.points[tripHistory.points.length - 1];
     const endFeature = new Feature({
       geometry: new Point(fromLonLat([endPoint.longitude, endPoint.latitude]))
@@ -424,7 +570,6 @@ export function FleetMap({
       })
     );
 
-    // 5. Marcadores de paradas registradas
     const stopFeatures: Feature<Point>[] = [];
     tripHistory.points.forEach((pt) => {
       if (pt.stopReason) {
@@ -447,7 +592,6 @@ export function FleetMap({
       }
     });
 
-    // 6. Marcador del vehículo en reproducción
     const markerFeature = new Feature({
       geometry: new Point(fromLonLat([startPoint.longitude, startPoint.latitude]))
     });
@@ -472,10 +616,8 @@ export function FleetMap({
     );
     playbackMarkerFeatureRef.current = markerFeature;
 
-    // Agregar todas las entidades juntas en una sola llamada sin múltiples repintados
     source.addFeatures([routeLine, routeLineInner, startFeature, endFeature, ...stopFeatures, markerFeature]);
 
-    // Encuadrar la vista al viaje completo suavemente
     const extent = routeLine.getGeometry()?.getExtent();
     if (extent && mapRef.current) {
       mapRef.current.getView().fit(extent, {
@@ -499,7 +641,6 @@ export function FleetMap({
     const isStopped = !!playbackPoint.stopReason;
     const style = playbackMarkerFeatureRef.current.getStyle() as Style | undefined;
 
-    // Modificar la rotación y el texto directamente sobre el estilo existente (¡cero flash/parpadeo!)
     if (style && style.getImage()) {
       style.getImage()?.setRotation(headingRad);
       const text = style.getText();

@@ -67,8 +67,11 @@ simulator.start(
   (telemetry) => {
     broadcast({ type: 'TELEMETRY_UPDATE', payload: telemetry });
   },
-  (vehicleId, status, currentStop) => {
-    broadcast({ type: 'VEHICLE_STATUS_CHANGE', payload: { vehicleId, status, currentStop } });
+  (vehicleId, status, currentStop, emergencyMission) => {
+    broadcast({ type: 'VEHICLE_STATUS_CHANGE', payload: { vehicleId, status, currentStop, emergencyMission } });
+  },
+  (incident) => {
+    broadcast({ type: 'EMERGENCY_UPDATE', payload: incident });
   }
 );
 
@@ -80,14 +83,15 @@ wss.on('connection', (ws) => {
     type: 'INITIAL_STATE',
     payload: {
       vehicles: simulator.getVehicles(),
-      simulator: simulator.getStatus()
+      simulator: simulator.getStatus(),
+      incident: simulator.getActiveIncident()
     }
   };
   ws.send(JSON.stringify(initialMessage));
 
   ws.on('message', (raw) => {
     try {
-      const msg = JSON.parse(raw.toString());
+      const msg = JSON.parse(raw.toString()) as WSClientMessage;
       if (msg.type === 'SIMULATOR_COMMAND') {
         if (msg.command === 'play') {
           simulator.resume();
@@ -104,6 +108,10 @@ wss.on('connection', (ws) => {
         if (history) {
           ws.send(JSON.stringify({ type: 'VEHICLE_HISTORY_DATA', payload: history }));
         }
+      } else if (msg.type === 'TRIGGER_EMERGENCY') {
+        simulator.triggerEmergency(msg.incidentId, msg.latitude, msg.longitude, msg.title, msg.address);
+      } else if (msg.type === 'RESOLVE_EMERGENCY') {
+        simulator.resolveEmergency();
       }
     } catch (err) {
       console.error('Error parseando mensaje WS del cliente:', err);

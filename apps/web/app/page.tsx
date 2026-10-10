@@ -7,6 +7,7 @@ import { VehicleSidebar } from '../components/VehicleSidebar';
 import { VehicleDetailDrawer } from '../components/VehicleDetailDrawer';
 import { SimulatorControls } from '../components/SimulatorControls';
 import { RoutePlaybackBar } from '../components/RoutePlaybackBar';
+import { EmergencyIncidentBar } from '../components/EmergencyIncidentBar';
 import { HistoricalPoint } from '@fleet/types';
 
 // Cargar FleetMap dinámicamente con ssr: false para garantizar compatibilidad con OpenLayers
@@ -31,6 +32,9 @@ export default function FleetDashboardPage() {
     vehicleList,
     breadcrumbs,
     tripHistory,
+    activeIncident,
+    triggerEmergency,
+    resolveEmergency,
     fetchVehicleHistory,
     clearTripHistory,
     connectionStatus,
@@ -70,7 +74,7 @@ export default function FleetDashboardPage() {
 
   return (
     <main className="relative w-screen h-screen overflow-hidden flex bg-slate-950">
-      {/* Barra lateral de vehículos y filtros */}
+      {/* Barra lateral de vehículos, emergencias y filtros */}
       <VehicleSidebar
         vehicles={vehicleList}
         selectedVehicleId={selectedVehicleId}
@@ -81,7 +85,16 @@ export default function FleetDashboardPage() {
 
       {/* Contenedor central del mapa OpenLayers */}
       <div className="relative flex-1 h-full">
-        {/* Controles de Simulación superiores (ocultos durante la reproducción histórica) */}
+        {/* Panel Superior Táctico de Emergencias 112 (oculto en Time-Machine) */}
+        {!tripHistory && (
+          <EmergencyIncidentBar
+            activeIncident={activeIncident}
+            onTriggerEmergency={triggerEmergency}
+            onResolveEmergency={resolveEmergency}
+          />
+        )}
+
+        {/* Controles de Simulación inferiores (ocultos durante la reproducción histórica) */}
         {!tripHistory && (
           <SimulatorControls
             status={simulatorStatus}
@@ -89,7 +102,7 @@ export default function FleetDashboardPage() {
           />
         )}
 
-        {/* Mapa OpenLayers */}
+        {/* Mapa OpenLayers con capas de emergencia y flota */}
         <FleetMap
           vehicles={vehicles}
           selectedVehicleId={selectedVehicleId}
@@ -98,6 +111,7 @@ export default function FleetDashboardPage() {
           onSelectVehicle={handleSelectVehicle}
           tripHistory={tripHistory}
           playbackPoint={currentPlaybackPoint}
+          activeIncident={activeIncident}
         />
 
         {/* Ficha flotante de telemetría del vehículo seleccionado */}

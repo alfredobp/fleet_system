@@ -1,6 +1,19 @@
-export type VehicleType = 'truck' | 'van' | 'car' | 'motorcycle';
+export type VehicleType =
+  | 'truck'
+  | 'van'
+  | 'car'
+  | 'motorcycle'
+  | 'fire_truck'
+  | 'ambulance'
+  | 'police';
 
-export type VehicleStatus = 'moving' | 'idle' | 'stopped' | 'alert';
+export type VehicleStatus =
+  | 'moving'
+  | 'idle'
+  | 'stopped'
+  | 'alert'
+  | 'responding'
+  | 'on_scene';
 
 export type StopReasonType =
   | 'traffic_light'   // Semáforo en rojo
@@ -17,6 +30,19 @@ export interface StopInfo {
   startedAt: number;
 }
 
+export type EmergencyRole = 'police' | 'fire' | 'ambulance';
+
+export interface EmergencyMission {
+  incidentId: string;
+  role: EmergencyRole;
+  targetLat: number;
+  targetLng: number;
+  address: string;
+  etaSeconds: number;
+  distanceRemainingMeters: number;
+  status: 'dispatched' | 'en_route' | 'arrived';
+}
+
 export interface TelemetryPayload {
   vehicleId: string;
   latitude: number;
@@ -29,6 +55,7 @@ export interface TelemetryPayload {
   odometer: number;     // Total km
   timestamp: number;    // Unix ms
   currentStop?: StopInfo;
+  emergencyMission?: EmergencyMission;
 }
 
 export interface Vehicle {
@@ -41,6 +68,7 @@ export interface Vehicle {
   color: string;
   lastTelemetry: TelemetryPayload;
   currentStop?: StopInfo;
+  emergencyMission?: EmergencyMission;
 }
 
 export interface SimulatorStatus {
@@ -72,17 +100,48 @@ export interface VehicleTripHistory {
   points: HistoricalPoint[];
 }
 
+export interface RespondingUnit {
+  vehicleId: string;
+  role: EmergencyRole;
+  name: string;
+  plate: string;
+  speedKmh: number;
+  etaSeconds: number;
+  distanceMeters: number;
+  status: 'responding' | 'arrived';
+  arrived?: boolean;
+  actionText: string;
+}
+
+export interface EmergencyIncident {
+  id: string;
+  title: string;
+  description: string;
+  latitude: number;
+  longitude: number;
+  address: string;
+  severity: 'critical' | 'high' | 'medium';
+  status: 'dispatched' | 'units_responding' | 'on_scene' | 'under_control' | 'resolved';
+  createdAt: number;
+  units: RespondingUnit[];
+  interventionProgress?: number;      // 0 a 100%
+  interventionPhase?: string;         // Fase táctica actual de atención
+}
+
 export type WSClientMessage =
   | { type: 'SUBSCRIBE' }
   | { type: 'SIMULATOR_COMMAND'; command: 'play' | 'pause' | 'set_speed'; speedMultiplier?: number }
   | { type: 'TRIGGER_ALERT'; vehicleId: string; message: string }
   | { type: 'TRIGGER_STOP'; vehicleId: string; reason: StopReasonType; duration: number }
-  | { type: 'GET_VEHICLE_HISTORY'; vehicleId: string };
+  | { type: 'GET_VEHICLE_HISTORY'; vehicleId: string }
+  | { type: 'TRIGGER_EMERGENCY'; incidentId?: string; latitude?: number; longitude?: number; title?: string; address?: string }
+  | { type: 'RESOLVE_EMERGENCY'; incidentId: string };
 
 export type WSServerMessage =
-  | { type: 'INITIAL_STATE'; payload: { vehicles: Vehicle[]; simulator: SimulatorStatus } }
+  | { type: 'INITIAL_STATE'; payload: { vehicles: Vehicle[]; simulator: SimulatorStatus; incident?: EmergencyIncident | null } }
   | { type: 'TELEMETRY_UPDATE'; payload: TelemetryPayload }
-  | { type: 'VEHICLE_STATUS_CHANGE'; payload: { vehicleId: string; status: VehicleStatus; currentStop?: StopInfo } }
+  | { type: 'VEHICLE_STATUS_CHANGE'; payload: { vehicleId: string; status: VehicleStatus; currentStop?: StopInfo; emergencyMission?: EmergencyMission } }
   | { type: 'SIMULATOR_STATUS'; payload: SimulatorStatus }
   | { type: 'ALERT_EVENT'; payload: { vehicleId: string; message: string; timestamp: number } }
-  | { type: 'VEHICLE_HISTORY_DATA'; payload: VehicleTripHistory };
+  | { type: 'VEHICLE_HISTORY_DATA'; payload: VehicleTripHistory }
+  | { type: 'EMERGENCY_UPDATE'; payload: EmergencyIncident | null };
