@@ -24,7 +24,7 @@ interface VehicleSidebarProps {
     idle: number;
     avgSpeed: number;
   };
-  connectionStatus: 'connecting' | 'connected' | 'disconnected';
+  connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'demo';
 }
 
 function getVehicleIcon(type: string) {
@@ -105,13 +105,15 @@ export function VehicleSidebar({
               className={`w-2 h-2 rounded-full ${
                 connectionStatus === 'connected'
                   ? 'bg-emerald-400'
+                  : connectionStatus === 'demo'
+                  ? 'bg-cyan-400'
                   : connectionStatus === 'connecting'
                   ? 'bg-amber-400 animate-ping'
                   : 'bg-rose-400'
               }`}
             />
             <span className="text-slate-400">
-              {connectionStatus === 'connected' ? 'En Vivo' : 'Conectando'}
+              {connectionStatus === 'connected' ? 'En Vivo' : connectionStatus === 'demo' ? 'Modo Demo' : 'Conectando'}
             </span>
           </div>
         </div>
