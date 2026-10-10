@@ -23,7 +23,7 @@ interface VehicleDetailDrawerProps {
   onClose: () => void;
   followMode: boolean;
   onToggleFollow: () => void;
-  onTriggerStop?: (vehicleId: string, reason: string, duration: number) => void;
+  onTriggerStop?: (vehicleId: string, reason: any, duration: number) => void;
   onOpenHistory?: (vehicleId: string) => void;
 }
 
