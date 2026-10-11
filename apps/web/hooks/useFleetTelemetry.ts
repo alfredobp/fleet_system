@@ -169,6 +169,114 @@ export function useFleetTelemetry() {
     isRunning: true
   });
 
+  // Despacho táctico client-side para simulación offline o autónoma
+  const dispatchClientEmergency = useCallback((
+    incidentId = 'inc-gran-via',
+    latitude?: number,
+    longitude?: number,
+    title?: string,
+    address?: string
+  ) => {
+    const preset = PRESET_INCIDENTS.find((p) => p.id === incidentId) || PRESET_INCIDENTS[0];
+    const targetLat = latitude ?? preset.latitude;
+    const targetLng = longitude ?? preset.longitude;
+    const incTitle = title ?? preset.title;
+    const incAddress = address ?? preset.address;
+
+    const state = clientSimState.current;
+    const units: RespondingUnit[] = [];
+
+    const TACTICAL_OFFSETS: Record<string, { dLat: number; dLng: number; heading: number }> = {
+      police: { dLat: 0.00018, dLng: -0.00022, heading: 45 },
+      fire: { dLat: -0.00012, dLng: -0.00014, heading: 90 },
+      ambulance: { dLat: -0.00020, dLng: 0.00018, heading: 135 }
+    };
+
+    ALL_INITIAL_VEHICLE_CONFIGS.filter((c) => c.isEmergency).forEach((cfg) => {
+      const v = state.vehicles[cfg.id];
+      if (!v) return;
+
+      const offset = TACTICAL_OFFSETS[cfg.role || 'police'] || { dLat: 0, dLng: 0, heading: 0 };
+      const tacticalLat = targetLat + offset.dLat;
+      const tacticalLng = targetLng + offset.dLng;
+
+      const dist = calculateDistanceMeters(v.lastTelemetry.latitude, v.lastTelemetry.longitude, tacticalLat, tacticalLng);
+      const speedMs = (cfg.emergencySpeed * 1000) / 3600;
+      const etaSeconds = Math.max(10, Math.round(dist / speedMs));
+
+      // Crear waypoints de aproximación directa hacia el puesto táctico asignado
+      const approachWps: Array<{ lat: number; lng: number }> = [];
+      const steps = 4;
+      for (let s = 1; s <= steps; s++) {
+        const f = s / steps;
+        approachWps.push({
+          lat: v.lastTelemetry.latitude + (tacticalLat - v.lastTelemetry.latitude) * f,
+          lng: v.lastTelemetry.longitude + (tacticalLng - v.lastTelemetry.longitude) * f
+        });
+      }
+
+      state.emergencyState[cfg.id] = {
+        targetLat: tacticalLat,
+        targetLng: tacticalLng,
+        approachWaypoints: approachWps,
+        currentWpIdx: 0
+      };
+
+      v.status = 'responding';
+      v.lastTelemetry.speed = cfg.emergencySpeed;
+
+      const mission: EmergencyMission = {
+        incidentId: preset.id,
+        role: cfg.role!,
+        targetLat: tacticalLat,
+        targetLng: tacticalLng,
+        address: incAddress,
+        etaSeconds,
+        distanceRemainingMeters: Math.round(dist),
+        status: 'en_route'
+      };
+
+      v.emergencyMission = mission;
+      v.lastTelemetry.emergencyMission = mission;
+
+      units.push({
+        vehicleId: cfg.id,
+        role: cfg.role!,
+        name: cfg.name,
+        plate: cfg.plate,
+        speedKmh: cfg.emergencySpeed,
+        etaSeconds,
+        distanceMeters: Math.round(dist),
+        status: 'responding',
+        arrived: false,
+        actionText: cfg.role === 'police'
+          ? 'En camino • Prioridad Código 3 (Acordonamiento y corte de vía)'
+          : cfg.role === 'ambulance'
+          ? 'En camino • Soporte Vital Avanzado (Atención médica y triaje)'
+          : 'En camino • Tren de Extinción (Bomba pesada y excarcelación)'
+      });
+    });
+
+    const newInc: EmergencyIncident = {
+      id: preset.id,
+      title: incTitle,
+      description: preset.description,
+      latitude: targetLat,
+      longitude: targetLng,
+      address: incAddress,
+      severity: preset.severity,
+      status: 'units_responding',
+      createdAt: Date.now(),
+      units,
+      interventionProgress: 0,
+      interventionPhase: 'Fase 1: Respuesta y aproximación rápida de dotaciones'
+    };
+
+    state.activeIncident = newInc;
+    setActiveIncident(newInc);
+    setVehicles({ ...state.vehicles });
+  }, []);
+
   // Inicializador de simulación local autónoma en el navegador
   const initClientSimulation = useCallback(() => {
     if (isDemoModeRef.current) return;
@@ -215,6 +323,9 @@ export function useFleetTelemetry() {
     clientSimState.current.vehicles = vMap;
     setVehicles(vMap);
     setBreadcrumbs(trails);
+
+    // Iniciar inmediatamente la simulación de emergencia con el incidente de Gran Vía
+    dispatchClientEmergency('inc-gran-via');
 
     // Bucle de actualización client-side cada 1 segundo
     if (demoIntervalRef.current) clearInterval(demoIntervalRef.current);

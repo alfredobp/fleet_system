@@ -11,6 +11,7 @@ import VectorSource from 'ol/source/Vector.js';
 import Feature from 'ol/Feature.js';
 import Point from 'ol/geom/Point.js';
 import LineString from 'ol/geom/LineString.js';
+import Circle from 'ol/geom/Circle.js';
 import { Style, Stroke, Fill, Text, Icon } from 'ol/style.js';
 import { fromLonLat, toLonLat } from 'ol/proj.js';
 import { Vehicle, VehicleTripHistory, HistoricalPoint, EmergencyIncident } from '@fleet/types';
@@ -97,6 +98,36 @@ function getSvgDataUrl(color: string, type: string, isResponding = false): strin
   return svgCache[key];
 }
 
+// Obtiene el emoji y nombre del tipo de vehículo
+function getVehicleTypeLabel(type?: string): string {
+  switch (type) {
+    case 'police':
+      return '🚓 Policía';
+    case 'ambulance':
+      return '🚑 Ambulancia';
+    case 'fire_truck':
+    case 'fire':
+      return '🚒 Bomberos';
+    case 'truck':
+      return '🚚 Camión';
+    case 'van':
+      return '🚐 Furgoneta';
+    case 'motorcycle':
+      return '🛵 Moto';
+    case 'car':
+      return '🚗 Coche';
+    default:
+      return '🚗 Vehículo';
+  }
+}
+
+// Configuración de puestos tácticos asignados alrededor del incidente (Madrid 112)
+const TACTICAL_OFFSETS: Record<string, { dLat: number; dLng: number; heading: number; label: string; roleColor: string }> = {
+  police: { dLat: 0.00018, dLng: -0.00022, heading: 45, label: '🚓 CORTE POLICIAL', roleColor: '#3b82f6' },
+  fire: { dLat: -0.00012, dLng: -0.00014, heading: 90, label: '🚒 EMPLAZAMIENTO BOMBEROS', roleColor: '#ef4444' },
+  ambulance: { dLat: -0.00020, dLng: 0.00018, heading: 135, label: '🚑 ZONA TRIAJE SAMUR', roleColor: '#10b981' }
+};
+
 export function FleetMap({
   vehicles,
   selectedVehicleId,
@@ -115,6 +146,23 @@ export function FleetMap({
   const playbackSourceRef = useRef<VectorSource>(new VectorSource());
   const emergencySourceRef = useRef<VectorSource>(new VectorSource());
   const playbackMarkerFeatureRef = useRef<Feature<Point> | null>(null);
+  const lastIncidentIdRef = useRef<string | null>(null);
+
+  // Estado para el tooltip interactivo al pasar el cursor sobre los iconos
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
+
+  // Refs actualizadas para lectura en tiempo real dentro del listener de pointermove
+  const vehiclesRef = useRef(vehicles);
+  vehiclesRef.current = vehicles;
+
+  const activeIncidentRef = useRef(activeIncident);
+  activeIncidentRef.current = activeIncident;
+
+  const tripHistoryRef = useRef(tripHistory);
+  tripHistoryRef.current = tripHistory;
+
+  const playbackPointRef = useRef(playbackPoint);
+  playbackPointRef.current = playbackPoint;
 
   const vehicleLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
   const trailLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
@@ -237,9 +285,96 @@ export function FleetMap({
       }
     });
 
+    // Evento de hover (pointermove) sobre iconos del mapa para mostrar Tooltip: solo Tipo de Vehículo y Velocidad
+    map.on('pointermove', (event) => {
+      if (event.dragging) {
+        setTooltip(null);
+        return;
+      }
+
+      let detectedText: string | null = null;
+
+      map.forEachFeatureAtPixel(
+        event.pixel,
+        (feature) => {
+          const vehicleId = feature.get('vehicleId');
+          if (vehicleId) {
+            const v = vehiclesRef.current[vehicleId];
+            if (v) {
+              detectedText = `${getVehicleTypeLabel(v.type)} • ${v.lastTelemetry.speed} km/h`;
+              return true;
+            }
+          }
+
+          if (feature.get('isIncident')) {
+            const inc = activeIncidentRef.current;
+            detectedText = inc ? `💥 Incidente • ${inc.title}` : '💥 Incidente de Emergencia';
+            return true;
+          }
+
+          const stagingRole = feature.get('stagingRole');
+          if (stagingRole) {
+            detectedText = `📍 Puesto • ${getVehicleTypeLabel(stagingRole)}`;
+            return true;
+          }
+
+          if (feature.get('isStopPoint')) {
+            const stopReason = feature.get('stopReason');
+            detectedText = `🛑 Parada • 0 km/h${stopReason ? ` (${stopReason})` : ''}`;
+            return true;
+          }
+
+          if (feature.get('isStartPoint')) {
+            detectedText = '🏁 Salida del Viaje';
+            return true;
+          }
+
+          if (feature.get('isEndPoint')) {
+            detectedText = '🎯 Llegada del Viaje';
+            return true;
+          }
+
+          if (feature.get('isPlaybackMarker')) {
+            const pt = playbackPointRef.current;
+            const history = tripHistoryRef.current;
+            const type = history?.vehicleName.toLowerCase().includes('moto')
+              ? 'motorcycle'
+              : history?.vehicleName.toLowerCase().includes('sprinter')
+              ? 'van'
+              : 'truck';
+            detectedText = `${getVehicleTypeLabel(type)} • ${pt?.speed ?? 0} km/h`;
+            return true;
+          }
+        },
+        { hitTolerance: 10 }
+      );
+
+      const targetEl = map.getTargetElement();
+      if (detectedText) {
+        if (targetEl) targetEl.style.cursor = 'pointer';
+        setTooltip({
+          x: event.pixel[0],
+          y: event.pixel[1],
+          text: detectedText
+        });
+      } else {
+        if (targetEl) targetEl.style.cursor = '';
+        setTooltip(null);
+      }
+    });
+
+    const targetEl = mapElementRef.current;
+    const handleMouseLeave = () => setTooltip(null);
+    if (targetEl) {
+      targetEl.addEventListener('mouseleave', handleMouseLeave);
+    }
+
     mapRef.current = map;
 
     return () => {
+      if (targetEl) {
+        targetEl.removeEventListener('mouseleave', handleMouseLeave);
+      }
       map.setTarget(undefined);
     };
   }, []);
@@ -255,117 +390,18 @@ export function FleetMap({
     }
   }, [tripHistory]);
 
-  // Visualización del Incidente y Líneas de Aproximación 112
-  useEffect(() => {
-    const source = emergencySourceRef.current;
-    source.clear();
-
-    if (!activeIncident) return;
-
-    const incCoords = fromLonLat([activeIncident.longitude, activeIncident.latitude]);
-
-    // 1. Marcador del Incidente con Baliza de Emergencia
-    const incidentFeature = new Feature({
-      geometry: new Point(incCoords)
-    });
-
-    incidentFeature.setStyle(
-      new Style({
-        image: new Icon({
-          src: createIncidentSvgIcon(),
-          scale: 1.15
-        }),
-        text: new Text({
-          text: `🚨 ${activeIncident.title.toUpperCase()}\n📍 ${activeIncident.address}`,
-          font: 'bold 11px sans-serif',
-          offsetY: -36,
-          fill: new Fill({ color: '#ffffff' }),
-          backgroundFill: new Fill({ color: 'rgba(185, 28, 28, 0.95)' }),
-          backgroundStroke: new Stroke({ color: '#fca5a5', width: 1.5 }),
-          padding: [4, 8, 4, 8]
-        })
-      })
-    );
-
-    const featuresToAdd: Feature[] = [incidentFeature];
-
-    // 2. Líneas de despacho desde cada vehículo que acude hacia el incidente
-    activeIncident.units.forEach((unit) => {
-      const v = vehicles[unit.vehicleId];
-      if (!v) return;
-
-      const vCoords = fromLonLat([v.lastTelemetry.longitude, v.lastTelemetry.latitude]);
-      const approachLine = new Feature({
-        geometry: new LineString([vCoords, incCoords])
-      });
-
-      const strokeColor =
-        unit.role === 'police'
-          ? 'rgba(59, 130, 246, 0.85)'
-          : unit.role === 'ambulance'
-          ? 'rgba(245, 158, 11, 0.85)'
-          : 'rgba(239, 68, 68, 0.85)';
-
-      approachLine.setStyle(
-        new Style({
-          stroke: new Stroke({
-            color: strokeColor,
-            width: unit.status === 'arrived' ? 1.5 : 3.5,
-            lineDash: unit.status === 'arrived' ? [3, 3] : [8, 4]
-          })
-        })
-      );
-
-      featuresToAdd.push(approachLine);
-    });
-
-    source.addFeatures(featuresToAdd);
-  }, [activeIncident, vehicles]);
-
-  // Actualizar estilo del vehículo en tiempo real (refleja emergencias, ETA, paradas y rumbo)
+  // Actualizar estilo del vehículo en tiempo real (solo icono rotativo sin etiquetas de texto; se muestran en tooltip)
   const updateFeatureStyle = (feature: Feature<Point>, vehicle: Vehicle, isSelected: boolean, headingDeg: number) => {
     const headingRad = (headingDeg * Math.PI) / 180;
     const isResponding = vehicle.status === 'responding';
     const isOnScene = vehicle.status === 'on_scene';
     const isStopped = !!vehicle.currentStop;
 
-    let labelText = `${vehicle.name.split(' ')[0]} • ${vehicle.lastTelemetry.speed} km/h`;
-    let bgFillColor = 'rgba(15, 23, 42, 0.85)';
-    let strokeColor = 'rgba(255, 255, 255, 0.15)';
-
-    if (isResponding && vehicle.emergencyMission) {
-      const eta = vehicle.emergencyMission.etaSeconds;
-      const etaStr = eta >= 60 ? `${Math.floor(eta / 60)}m ${eta % 60}s` : `${eta}s`;
-      const roleIcon = vehicle.type === 'police' ? '🚓' : vehicle.type === 'ambulance' ? '🚑' : '🚒';
-      labelText = `${roleIcon} ETA: ${etaStr} • ${vehicle.lastTelemetry.speed} km/h`;
-      bgFillColor = vehicle.type === 'police'
-        ? 'rgba(29, 78, 216, 0.95)'
-        : vehicle.type === 'ambulance'
-        ? 'rgba(217, 119, 6, 0.95)'
-        : 'rgba(185, 28, 28, 0.95)';
-      strokeColor = '#ffffff';
-    } else if (isOnScene) {
-      labelText = `🚨 EN EL LUGAR (${vehicle.plate})`;
-      bgFillColor = 'rgba(185, 28, 28, 0.95)';
-      strokeColor = '#facc15';
-    } else if (isStopped) {
-      labelText = `${vehicle.name.split(' ')[0]} • 🛑 ${vehicle.currentStop!.remainingSeconds}s`;
-      bgFillColor = 'rgba(180, 83, 9, 0.95)';
-      strokeColor = '#fbbf24';
-    } else if (isSelected) {
-      bgFillColor = 'rgba(2, 132, 199, 0.95)';
-      strokeColor = '#38bdf8';
-    }
-
     const iconColor = isSelected ? '#38bdf8' : isOnScene ? '#ef4444' : isStopped ? '#f59e0b' : vehicle.color;
     const existingStyle = feature.getStyle() as Style | undefined;
 
     if (existingStyle && existingStyle.getImage()) {
       existingStyle.getImage()?.setRotation(headingRad);
-      const text = existingStyle.getText();
-      if (text) {
-        text.setText(labelText);
-      }
       feature.changed();
     } else {
       feature.setStyle(
@@ -375,15 +411,6 @@ export function FleetMap({
             rotation: headingRad,
             rotateWithView: true,
             scale: isResponding || isOnScene || isSelected ? 1.25 : 0.95
-          }),
-          text: new Text({
-            text: labelText,
-            font: isResponding || isOnScene || isSelected ? 'bold 11px sans-serif' : '10px sans-serif',
-            offsetY: 28,
-            fill: new Fill({ color: '#ffffff' }),
-            backgroundFill: new Fill({ color: bgFillColor }),
-            backgroundStroke: new Stroke({ color: strokeColor, width: 1.5 }),
-            padding: [2, 6, 2, 6]
           })
         })
       );
@@ -502,6 +529,205 @@ export function FleetMap({
     }
   }, [selectedVehicleId, breadcrumbs, tripHistory]);
 
+  // Renderizado del incidente de emergencia 112, perímetro de exclusión y despliegue táctico
+  useEffect(() => {
+    const emergencySource = emergencySourceRef.current;
+    emergencySource.clear();
+
+    if (!activeIncident || tripHistory) {
+      lastIncidentIdRef.current = null;
+      return;
+    }
+
+    const incidentCenterCoords = fromLonLat([activeIncident.longitude, activeIncident.latitude]);
+
+    // 1. Perímetro de Seguridad Exterior 112 (50 metros)
+    const outerPerimeterGeom = new Circle(incidentCenterCoords, 50);
+    const outerPerimeterFeature = new Feature({
+      geometry: outerPerimeterGeom,
+      name: 'perimetro_seguridad_exterior'
+    });
+    outerPerimeterFeature.setStyle(
+      new Style({
+        stroke: new Stroke({
+          color: 'rgba(239, 68, 68, 0.95)',
+          width: 2.5,
+          lineDash: [8, 6]
+        }),
+        fill: new Fill({
+          color: 'rgba(239, 68, 68, 0.12)'
+        })
+      })
+    );
+
+    // 2. Zona Cero / Foco de Impacto (20 metros)
+    const hotZoneGeom = new Circle(incidentCenterCoords, 20);
+    const hotZoneFeature = new Feature({
+      geometry: hotZoneGeom,
+      name: 'zona_cero_impacto'
+    });
+    hotZoneFeature.setStyle(
+      new Style({
+        stroke: new Stroke({
+          color: 'rgba(245, 158, 11, 0.85)',
+          width: 2,
+          lineDash: [5, 4]
+        }),
+        fill: new Fill({
+          color: 'rgba(239, 68, 68, 0.22)'
+        })
+      })
+    );
+
+    // 3. Epicentro del Incidente (Icono limpio sin texto estático invasivo; detalles en Tooltip)
+    const incidentMarkerFeature = new Feature({
+      geometry: new Point(incidentCenterCoords),
+      isIncident: true,
+      incidentId: activeIncident.id
+    });
+    incidentMarkerFeature.setStyle(
+      new Style({
+        image: new Icon({
+          src: createIncidentSvgIcon(),
+          scale: 1.15
+        })
+      })
+    );
+
+    const featuresToAdd: Feature[] = [outerPerimeterFeature, hotZoneFeature, incidentMarkerFeature];
+
+    // 4. Puestos tácticos asignados alrededor del incidente (Policía, Bomberos, SAMUR)
+    const emergencyRoles: Array<'police' | 'fire' | 'ambulance'> = ['police', 'fire', 'ambulance'];
+    emergencyRoles.forEach((role) => {
+      const offset = TACTICAL_OFFSETS[role];
+      if (!offset) return;
+
+      const tacticalCoords = fromLonLat([
+        activeIncident.longitude + offset.dLng,
+        activeIncident.latitude + offset.dLat
+      ]);
+
+      const stagingFeature = new Feature({
+        geometry: new Point(tacticalCoords),
+        stagingRole: role,
+        stagingLabel: offset.label
+      });
+      stagingFeature.setStyle(
+        new Style({
+          image: new Icon({
+            src: getSvgDataUrl(offset.roleColor, role),
+            scale: 0.7
+          })
+        })
+      );
+      featuresToAdd.push(stagingFeature);
+    });
+
+    // 5. Líneas tácticas dinámicas y despliegue sobre el terreno (sin textos fijos)
+    Object.values(vehicles).forEach((vehicle) => {
+      let role: 'police' | 'fire' | 'ambulance' | null = null;
+      if (vehicle.type === 'police') role = 'police';
+      else if (vehicle.type === 'ambulance') role = 'ambulance';
+      else if (vehicle.type === 'fire_truck') role = 'fire';
+
+      if (!role) return;
+      const offset = TACTICAL_OFFSETS[role];
+      if (!offset) return;
+
+      const vehicleCoords = fromLonLat([vehicle.lastTelemetry.longitude, vehicle.lastTelemetry.latitude]);
+      const tacticalCoords = fromLonLat([
+        activeIncident.longitude + offset.dLng,
+        activeIncident.latitude + offset.dLat
+      ]);
+
+      if (vehicle.status === 'responding') {
+        // En camino: vector de respuesta
+        const lineFeature = new Feature({
+          geometry: new LineString([vehicleCoords, tacticalCoords])
+        });
+        lineFeature.setStyle(
+          new Style({
+            stroke: new Stroke({
+              color: offset.roleColor,
+              width: 2.5,
+              lineDash: [6, 4]
+            })
+          })
+        );
+        featuresToAdd.push(lineFeature);
+      } else if (vehicle.status === 'on_scene') {
+        // En el lugar: despliegue de material operativo
+        if (role === 'police') {
+          // Cordón policial de seguridad cortando la calzada
+          const barrierP1 = fromLonLat([
+            activeIncident.longitude + offset.dLng - 0.00018,
+            activeIncident.latitude + offset.dLat - 0.00012
+          ]);
+          const barrierP2 = fromLonLat([
+            activeIncident.longitude + offset.dLng + 0.00018,
+            activeIncident.latitude + offset.dLat + 0.00012
+          ]);
+          const barrierFeature = new Feature({
+            geometry: new LineString([barrierP1, barrierP2])
+          });
+          barrierFeature.setStyle(
+            new Style({
+              stroke: new Stroke({
+                color: '#3b82f6',
+                width: 4.5,
+                lineDash: [8, 4]
+              })
+            })
+          );
+          featuresToAdd.push(barrierFeature);
+        } else if (role === 'fire') {
+          // Tendido de manguera de alta presión desde la bomba al fuego
+          const hoseFeature = new Feature({
+            geometry: new LineString([vehicleCoords, incidentCenterCoords])
+          });
+          hoseFeature.setStyle(
+            new Style({
+              stroke: new Stroke({
+                color: '#f59e0b',
+                width: 3.5
+              })
+            })
+          );
+          featuresToAdd.push(hoseFeature);
+        } else if (role === 'ambulance') {
+          // Corredor sanitario de evacuación hacia el SVA
+          const corridorFeature = new Feature({
+            geometry: new LineString([vehicleCoords, incidentCenterCoords])
+          });
+          corridorFeature.setStyle(
+            new Style({
+              stroke: new Stroke({
+                color: '#10b981',
+                width: 3,
+                lineDash: [6, 4]
+              })
+            })
+          );
+          featuresToAdd.push(corridorFeature);
+        }
+      }
+    });
+
+    emergencySource.addFeatures(featuresToAdd);
+
+    // Centrado suave de cámara cuando entra un nuevo incidente
+    if (lastIncidentIdRef.current !== activeIncident.id) {
+      lastIncidentIdRef.current = activeIncident.id;
+      if (mapRef.current) {
+        mapRef.current.getView().animate({
+          center: incidentCenterCoords,
+          zoom: 16.5,
+          duration: 900
+        });
+      }
+    }
+  }, [activeIncident, vehicles, tripHistory]);
+
   // Efecto cuando se activa tripHistory: dibuja polilínea, inicio, fin y paradas de forma atómica
   useEffect(() => {
     const source = playbackSourceRef.current;
@@ -538,34 +764,30 @@ export function FleetMap({
 
     const startPoint = tripHistory.points[0];
     const startFeature = new Feature({
-      geometry: new Point(fromLonLat([startPoint.longitude, startPoint.latitude]))
+      geometry: new Point(fromLonLat([startPoint.longitude, startPoint.latitude])),
+      isStartPoint: true
     });
     startFeature.setStyle(
       new Style({
         text: new Text({
-          text: '🏁 SALIDA',
-          font: 'bold 11px sans-serif',
-          offsetY: -16,
-          fill: new Fill({ color: '#ffffff' }),
-          backgroundFill: new Fill({ color: '#16a34a' }),
-          padding: [2, 6, 2, 6]
+          text: '🏁',
+          font: '16px sans-serif',
+          offsetY: -4
         })
       })
     );
 
     const endPoint = tripHistory.points[tripHistory.points.length - 1];
     const endFeature = new Feature({
-      geometry: new Point(fromLonLat([endPoint.longitude, endPoint.latitude]))
+      geometry: new Point(fromLonLat([endPoint.longitude, endPoint.latitude])),
+      isEndPoint: true
     });
     endFeature.setStyle(
       new Style({
         text: new Text({
-          text: '🎯 LLEGADA',
-          font: 'bold 11px sans-serif',
-          offsetY: -16,
-          fill: new Fill({ color: '#ffffff' }),
-          backgroundFill: new Fill({ color: '#dc2626' }),
-          padding: [2, 6, 2, 6]
+          text: '🎯',
+          font: '16px sans-serif',
+          offsetY: -4
         })
       })
     );
@@ -574,17 +796,16 @@ export function FleetMap({
     tripHistory.points.forEach((pt) => {
       if (pt.stopReason) {
         const stopFeat = new Feature({
-          geometry: new Point(fromLonLat([pt.longitude, pt.latitude]))
+          geometry: new Point(fromLonLat([pt.longitude, pt.latitude])),
+          isStopPoint: true,
+          stopReason: pt.stopReason
         });
         stopFeat.setStyle(
           new Style({
             text: new Text({
-              text: `🛑 ${pt.stopReason}`,
-              font: 'bold 10px sans-serif',
-              offsetY: -16,
-              fill: new Fill({ color: '#ffffff' }),
-              backgroundFill: new Fill({ color: '#d97706' }),
-              padding: [2, 6, 2, 6]
+              text: '🛑',
+              font: '14px sans-serif',
+              offsetY: -4
             })
           })
         );
@@ -593,7 +814,8 @@ export function FleetMap({
     });
 
     const markerFeature = new Feature({
-      geometry: new Point(fromLonLat([startPoint.longitude, startPoint.latitude]))
+      geometry: new Point(fromLonLat([startPoint.longitude, startPoint.latitude])),
+      isPlaybackMarker: true
     });
     markerFeature.setStyle(
       new Style({
@@ -602,15 +824,6 @@ export function FleetMap({
           rotation: (startPoint.heading * Math.PI) / 180,
           rotateWithView: true,
           scale: 1.2
-        }),
-        text: new Text({
-          text: `${startPoint.speed} km/h`,
-          font: 'bold 11px sans-serif',
-          offsetY: 28,
-          fill: new Fill({ color: '#ffffff' }),
-          backgroundFill: new Fill({ color: 'rgba(2, 132, 199, 0.95)' }),
-          backgroundStroke: new Stroke({ color: '#38bdf8', width: 1 }),
-          padding: [2, 6, 2, 6]
         })
       })
     );
@@ -638,15 +851,10 @@ export function FleetMap({
     }
 
     const headingRad = (playbackPoint.heading * Math.PI) / 180;
-    const isStopped = !!playbackPoint.stopReason;
     const style = playbackMarkerFeatureRef.current.getStyle() as Style | undefined;
 
     if (style && style.getImage()) {
       style.getImage()?.setRotation(headingRad);
-      const text = style.getText();
-      if (text) {
-        text.setText(isStopped ? `🛑 ${playbackPoint.stopReason}` : `${playbackPoint.speed} km/h`);
-      }
       playbackMarkerFeatureRef.current.changed();
     }
   }, [playbackPoint]);
@@ -661,6 +869,24 @@ export function FleetMap({
   return (
     <div className="relative w-full h-full overflow-hidden">
       <div ref={mapElementRef} className="w-full h-full" />
+
+      {/* Tooltip interactivo flotante (Solo Tipo de Vehículo y Velocidad) */}
+      {tooltip && (
+        <div
+          className="pointer-events-none absolute z-50 transition-all duration-75 ease-out select-none"
+          style={{
+            left: tooltip.x,
+            top: tooltip.y,
+            transform: 'translate(-50%, calc(-100% - 14px))'
+          }}
+        >
+          <div className="relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900/95 backdrop-blur-md border border-slate-700/80 shadow-2xl shadow-black/90 text-xs font-semibold text-slate-100 whitespace-nowrap animate-in fade-in zoom-in-95 duration-100">
+            <span>{tooltip.text}</span>
+            {/* Flecha inferior del tooltip */}
+            <div className="absolute left-1/2 -bottom-1 -translate-x-1/2 w-2 h-2 bg-slate-900 border-r border-b border-slate-700 rotate-45" />
+          </div>
+        </div>
+      )}
 
       {/* Selector de Capas Base (100% Libres sin API Key) */}
       <div className="absolute bottom-4 left-4 glass-panel rounded-xl p-1 flex items-center gap-1 z-10 border border-slate-700/80 shadow-lg text-xs">

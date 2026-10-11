@@ -22,12 +22,14 @@ interface EmergencyIncidentBarProps {
   activeIncident: EmergencyIncident | null;
   onTriggerEmergency: (incidentId: string) => void;
   onResolveEmergency: () => void;
+  onClose?: () => void;
 }
 
 export function EmergencyIncidentBar({
   activeIncident,
   onTriggerEmergency,
-  onResolveEmergency
+  onResolveEmergency,
+  onClose
 }: EmergencyIncidentBarProps) {
   const [sirenSound, setSirenSound] = useState(false);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -94,7 +96,7 @@ export function EmergencyIncidentBar({
   };
 
   return (
-    <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 w-[94%] max-w-4xl glass-panel rounded-2xl p-3.5 shadow-2xl border border-rose-500/30">
+    <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 w-[94%] max-w-4xl glass-panel rounded-2xl p-3.5 shadow-2xl border border-rose-500/40 animate-in fade-in slide-in-from-top-3 duration-200">
       {/* 1. MODO: Sin Incidente Activo -> Selector de Escenarios de Emergencia */}
       {!activeIncident ? (
         <div className="flex items-center justify-between gap-4">
@@ -126,6 +128,16 @@ export function EmergencyIncidentBar({
                 {inc.title.split(' ')[0]} {inc.title.split(' ')[1]}
               </button>
             ))}
+
+            {onClose && (
+              <button
+                onClick={onClose}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/80 transition ml-1"
+                title="Cerrar panel flotante"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
           </div>
         </div>
       ) : (
@@ -182,6 +194,16 @@ export function EmergencyIncidentBar({
                 <CheckCircle2 className="w-4 h-4" />
                 Resolver Incidente
               </button>
+
+              {onClose && (
+                <button
+                  onClick={onClose}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition ml-1"
+                  title="Minimizar panel flotante"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
             </div>
           </div>
 

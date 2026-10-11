@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Vehicle, VehicleStatus } from '@fleet/types';
+import { Vehicle, VehicleStatus, EmergencyIncident } from '@fleet/types';
 import {
   Truck,
   Car,
@@ -11,7 +11,8 @@ import {
   BatteryCharging,
   Gauge,
   Activity,
-  Radio
+  Radio,
+  Flame
 } from 'lucide-react';
 
 interface VehicleSidebarProps {
@@ -25,6 +26,9 @@ interface VehicleSidebarProps {
     avgSpeed: number;
   };
   connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'demo';
+  onToggleEmergencyPanel?: () => void;
+  isEmergencyPanelOpen?: boolean;
+  activeIncident?: EmergencyIncident | null;
 }
 
 function getVehicleIcon(type: string) {
@@ -98,7 +102,10 @@ export function VehicleSidebar({
   selectedVehicleId,
   onSelectVehicle,
   stats,
-  connectionStatus
+  connectionStatus,
+  onToggleEmergencyPanel,
+  isEmergencyPanelOpen,
+  activeIncident
 }: VehicleSidebarProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'moving' | 'idle'>('all');
@@ -159,6 +166,46 @@ export function VehicleSidebar({
             <span className="text-lg font-bold text-blue-400">{stats.avgSpeed} <span className="text-xs font-normal">km/h</span></span>
           </div>
         </div>
+      </div>
+
+      {/* Botón de Acceso al Centro de Mando 112 Flotante */}
+      <div className="p-3 border-b border-slate-800/80 bg-slate-900/30">
+        <button
+          onClick={onToggleEmergencyPanel}
+          className={`w-full flex items-center justify-between p-2.5 rounded-xl border text-xs font-bold transition shadow-lg ${
+            activeIncident
+              ? 'bg-rose-950/80 hover:bg-rose-900/90 border-rose-500/70 text-rose-200 shadow-rose-950/50'
+              : isEmergencyPanelOpen
+              ? 'bg-rose-900/40 border-rose-500/60 text-white shadow-rose-950/30'
+              : 'bg-slate-900/90 hover:bg-slate-800 border-rose-500/30 text-rose-300 hover:text-white'
+          }`}
+        >
+          <div className="flex items-center gap-2.5">
+            <div className={`p-2 rounded-lg ${activeIncident ? 'bg-rose-600 text-white animate-bounce' : 'bg-rose-600/20 text-rose-400'}`}>
+              <Flame className="w-4 h-4" />
+            </div>
+            <div className="text-left">
+              <div className="flex items-center gap-1.5">
+                <span className="font-bold text-white">Despacho 112</span>
+                {activeIncident && (
+                  <span className="text-[10px] bg-rose-600 text-white px-1.5 py-0.5 rounded font-black uppercase animate-pulse">
+                    ACTIVO
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-400 font-normal truncate max-w-[170px]">
+                {activeIncident ? activeIncident.title : 'Simular atención a incidentes'}
+              </p>
+            </div>
+          </div>
+          <span className={`text-[11px] font-mono px-2 py-1 rounded-md border ${
+            isEmergencyPanelOpen
+              ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+              : 'bg-slate-800/80 text-slate-300 border-slate-700'
+          }`}>
+            {isEmergencyPanelOpen ? 'Ocultar ✕' : 'Ver 🚨'}
+          </span>
+        </button>
       </div>
 
       {/* Buscador y Filtros */}

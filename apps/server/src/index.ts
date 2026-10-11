@@ -75,6 +75,9 @@ simulator.start(
   }
 );
 
+// Despachar inmediatamente el escenario de emergencia de Gran Vía para simulación en vivo
+simulator.triggerEmergency('inc-gran-via');
+
 wss.on('connection', (ws) => {
   console.log('📡 Nuevo cliente conectado al WebSocket');
 

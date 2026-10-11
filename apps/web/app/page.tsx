@@ -47,6 +47,7 @@ export default function FleetDashboardPage() {
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [followMode, setFollowMode] = useState<boolean>(false);
   const [currentPlaybackPoint, setCurrentPlaybackPoint] = useState<HistoricalPoint | null>(null);
+  const [isEmergencyPanelOpen, setIsEmergencyPanelOpen] = useState<boolean>(false);
 
   const selectedVehicle = selectedVehicleId ? vehicles[selectedVehicleId] || null : null;
 
@@ -81,16 +82,25 @@ export default function FleetDashboardPage() {
         onSelectVehicle={handleSelectVehicle}
         stats={stats}
         connectionStatus={connectionStatus}
+        onToggleEmergencyPanel={() => setIsEmergencyPanelOpen((prev) => !prev)}
+        isEmergencyPanelOpen={isEmergencyPanelOpen}
+        activeIncident={activeIncident}
       />
 
       {/* Contenedor central del mapa OpenLayers */}
       <div className="relative flex-1 h-full">
-        {/* Panel Superior Táctico de Emergencias 112 (oculto en Time-Machine) */}
-        {!tripHistory && (
+        {/* Panel Superior Táctico de Emergencias 112 (flotante, activado desde el menú lateral) */}
+        {!tripHistory && isEmergencyPanelOpen && (
           <EmergencyIncidentBar
             activeIncident={activeIncident}
-            onTriggerEmergency={triggerEmergency}
-            onResolveEmergency={resolveEmergency}
+            onTriggerEmergency={(incId) => {
+              triggerEmergency(incId);
+              setIsEmergencyPanelOpen(true);
+            }}
+            onResolveEmergency={() => {
+              resolveEmergency();
+            }}
+            onClose={() => setIsEmergencyPanelOpen(false)}
           />
         )}
 
