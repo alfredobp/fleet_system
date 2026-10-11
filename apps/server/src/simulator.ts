@@ -11,7 +11,7 @@ import {
   RespondingUnit,
   EmergencyMission
 } from '@fleet/types';
-import { PRESET_ROUTES, RouteDefinition, PRESET_INCIDENTS, EMERGENCY_FLEET_CONFIGS } from './routes-data.js';
+import { PRESET_ROUTES, RouteDefinition, PRESET_INCIDENTS, EMERGENCY_FLEET_CONFIGS, EMERGENCY_APPROACH_ROUTES } from './routes-data.js';
 import { calculateBearing, calculateDistanceMeters } from './gis-math.js';
 
 interface VehicleSimState {
@@ -228,16 +228,21 @@ export class FleetSimulator {
       state.emergencyTarget = { lat: tacticalLat, lng: tacticalLng };
       state.emergencyWaypointIndex = 0;
       
-      // Creamos waypoints de aproximación directa
-      const midPoints: Array<{ lat: number; lng: number }> = [];
-      const steps = 4;
-      for (let s = 1; s <= steps; s++) {
-        const frac = s / steps;
-        const lat = v.lastTelemetry.latitude + (tacticalLat - v.lastTelemetry.latitude) * frac;
-        const lng = v.lastTelemetry.longitude + (tacticalLng - v.lastTelemetry.longitude) * frac;
-        midPoints.push({ lat, lng });
+      // Obtener ruta viaria real trazada por las calles de Madrid (OSRM)
+      const precomputedApproach = EMERGENCY_APPROACH_ROUTES[preset.id]?.[role];
+      if (precomputedApproach && precomputedApproach.length > 0) {
+        state.emergencyApproachWaypoints = [...precomputedApproach, { lat: tacticalLat, lng: tacticalLng }];
+      } else {
+        const midPoints: Array<{ lat: number; lng: number }> = [];
+        const steps = 6;
+        for (let s = 1; s <= steps; s++) {
+          const frac = s / steps;
+          const lat = v.lastTelemetry.latitude + (tacticalLat - v.lastTelemetry.latitude) * frac;
+          const lng = v.lastTelemetry.longitude + (tacticalLng - v.lastTelemetry.longitude) * frac;
+          midPoints.push({ lat, lng });
+        }
+        state.emergencyApproachWaypoints = midPoints;
       }
-      state.emergencyApproachWaypoints = midPoints;
 
       v.status = 'responding';
       v.lastTelemetry.speed = speedKmh;
@@ -467,10 +472,17 @@ export class FleetSimulator {
 
           // Avanzar hacia el puesto táctico
           const wps = state.emergencyApproachWaypoints;
-          const wpIdx = state.emergencyWaypointIndex ?? 0;
-          const nextTarget = wps[wpIdx] || target;
+          let wpIdx = state.emergencyWaypointIndex ?? 0;
+          let nextTarget = wps[wpIdx] || target;
+          let distToWp = calculateDistanceMeters(v.lastTelemetry.latitude, v.lastTelemetry.longitude, nextTarget.lat, nextTarget.lng);
 
-          const distToWp = calculateDistanceMeters(v.lastTelemetry.latitude, v.lastTelemetry.longitude, nextTarget.lat, nextTarget.lng);
+          while (distToWp <= 20 && wpIdx < wps.length - 1) {
+            wpIdx++;
+            state.emergencyWaypointIndex = wpIdx;
+            nextTarget = wps[wpIdx];
+            distToWp = calculateDistanceMeters(v.lastTelemetry.latitude, v.lastTelemetry.longitude, nextTarget.lat, nextTarget.lng);
+          }
+
           const speedKmh = state.targetSpeed;
           const moveStepMeters = (speedKmh * 1000 / 3600) * dtSeconds;
 
@@ -480,7 +492,7 @@ export class FleetSimulator {
           const newLat = v.lastTelemetry.latitude + (nextTarget.lat - v.lastTelemetry.latitude) * stepRatio;
           const newLng = v.lastTelemetry.longitude + (nextTarget.lng - v.lastTelemetry.longitude) * stepRatio;
 
-          if (distToWp <= 30 && wpIdx < wps.length - 1) {
+          if (distToWp <= 25 && wpIdx < wps.length - 1) {
             state.emergencyWaypointIndex = wpIdx + 1;
           }
 

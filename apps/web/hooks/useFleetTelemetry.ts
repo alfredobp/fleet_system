@@ -13,7 +13,7 @@ import {
   RespondingUnit,
   EmergencyMission
 } from '@fleet/types';
-import { PRESET_ROUTES, PRESET_INCIDENTS, EMERGENCY_FLEET_CONFIGS } from '../data/routes-data';
+import { PRESET_ROUTES, PRESET_INCIDENTS, EMERGENCY_FLEET_CONFIGS, EMERGENCY_APPROACH_ROUTES } from '../data/routes-data';
 
 export interface VehicleBreadcrumb {
   lat: number;
@@ -387,8 +387,14 @@ export function useFleetTelemetry() {
             allArrived = false;
 
             const wps = eState.approachWaypoints;
-            const nextTarget = wps[eState.currentWpIdx] || { lat: eState.targetLat, lng: eState.targetLng };
-            const distToNext = calculateDistanceMeters(v.lastTelemetry.latitude, v.lastTelemetry.longitude, nextTarget.lat, nextTarget.lng);
+            let nextTarget = wps[eState.currentWpIdx] || { lat: eState.targetLat, lng: eState.targetLng };
+            let distToNext = calculateDistanceMeters(v.lastTelemetry.latitude, v.lastTelemetry.longitude, nextTarget.lat, nextTarget.lng);
+
+            while (distToNext <= 20 && eState.currentWpIdx < wps.length - 1) {
+              eState.currentWpIdx += 1;
+              nextTarget = wps[eState.currentWpIdx];
+              distToNext = calculateDistanceMeters(v.lastTelemetry.latitude, v.lastTelemetry.longitude, nextTarget.lat, nextTarget.lng);
+            }
 
             const speedKmh = cfg.emergencySpeed;
             const stepMeters = (speedKmh * 1000 / 3600) * state.speedMultiplier;
@@ -398,7 +404,7 @@ export function useFleetTelemetry() {
             const newLng = v.lastTelemetry.longitude + (nextTarget.lng - v.lastTelemetry.longitude) * stepRatio;
             const heading = calculateBearing(v.lastTelemetry.latitude, v.lastTelemetry.longitude, nextTarget.lat, nextTarget.lng);
 
-            if (distToNext <= 35 && eState.currentWpIdx < wps.length - 1) {
+            if (distToNext <= 25 && eState.currentWpIdx < wps.length - 1) {
               eState.currentWpIdx += 1;
             }
 
@@ -505,20 +511,26 @@ export function useFleetTelemetry() {
         }
 
         const p1 = wps[prog.currentSegment];
-        const nextSeg = (prog.currentSegment + 1) % wps.length;
+        const nextSeg = (prog.currentSegment + 1) % (wps.length - 1);
         const p2 = wps[nextSeg];
+        const segDistMeters = calculateDistanceMeters(p1.lat, p1.lng, p2.lat, p2.lng);
 
-        const step = 0.08 * state.speedMultiplier;
-        prog.segmentProgress += step;
+        const speedKmh = route.targetSpeedKmh;
+        const distanceTraveledMeters = (speedKmh * 1000 / 3600) * state.speedMultiplier;
+        const progressIncrement = segDistMeters > 0 ? distanceTraveledMeters / segDistMeters : 1;
 
-        if (prog.segmentProgress >= 1) {
-          prog.segmentProgress = 0;
-          prog.currentSegment = nextSeg;
+        prog.segmentProgress += progressIncrement;
+
+        while (prog.segmentProgress >= 1.0) {
+          prog.segmentProgress -= 1.0;
+          prog.currentSegment = (prog.currentSegment + 1) % (wps.length - 1);
         }
 
-        const lat = p1.lat + (p2.lat - p1.lat) * prog.segmentProgress;
-        const lng = p1.lng + (p2.lng - p1.lng) * prog.segmentProgress;
-        const bearing = calculateBearing(p1.lat, p1.lng, p2.lat, p2.lng);
+        const activeP1 = wps[prog.currentSegment];
+        const activeP2 = wps[prog.currentSegment + 1];
+        const lat = activeP1.lat + (activeP2.lat - activeP1.lat) * prog.segmentProgress;
+        const lng = activeP1.lng + (activeP2.lng - activeP1.lng) * prog.segmentProgress;
+        const bearing = calculateBearing(activeP1.lat, activeP1.lng, activeP2.lat, activeP2.lng);
 
         v.lastTelemetry = {
           ...v.lastTelemetry,
@@ -724,15 +736,21 @@ export function useFleetTelemetry() {
       const speedMs = (cfg.emergencySpeed * 1000) / 3600;
       const etaSeconds = Math.max(10, Math.round(dist / speedMs));
 
-      // Crear waypoints de aproximación
-      const approachWps: Array<{ lat: number; lng: number }> = [];
-      const steps = 4;
-      for (let s = 1; s <= steps; s++) {
-        const f = s / steps;
-        approachWps.push({
-          lat: v.lastTelemetry.latitude + (tacticalLat - v.lastTelemetry.latitude) * f,
-          lng: v.lastTelemetry.longitude + (tacticalLng - v.lastTelemetry.longitude) * f
-        });
+      // Crear waypoints de aproximación viaria real (OSRM)
+      const precomputedApproach = EMERGENCY_APPROACH_ROUTES[preset.id]?.[cfg.role || 'police'];
+      let approachWps: Array<{ lat: number; lng: number }> = [];
+
+      if (precomputedApproach && precomputedApproach.length > 0) {
+        approachWps = [...precomputedApproach, { lat: tacticalLat, lng: tacticalLng }];
+      } else {
+        const steps = 6;
+        for (let s = 1; s <= steps; s++) {
+          const f = s / steps;
+          approachWps.push({
+            lat: v.lastTelemetry.latitude + (tacticalLat - v.lastTelemetry.latitude) * f,
+            lng: v.lastTelemetry.longitude + (tacticalLng - v.lastTelemetry.longitude) * f
+          });
+        }
       }
 
       state.emergencyState[cfg.id] = {
